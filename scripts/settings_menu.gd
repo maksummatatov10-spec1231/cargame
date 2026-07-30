@@ -14,6 +14,8 @@ signal closed
 
 var _fps_value: Label
 var _vsync_value: Label
+var _preset_value: Label
+var _scale_value: Label
 var _refresh_note: Label
 var _fps_index := 0
 
@@ -43,12 +45,106 @@ func _build() -> void:
 		("%.0f Гц" % refresh if refresh > 0.0 else "неизвестна"))
 	page.add_child(_refresh_note)
 
+	# The list is longer than a 900 px window once every option is present, so
+	# it scrolls rather than running off the bottom of the screen.
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(760.0, 460.0)
+	scroll.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	page.add_child(scroll)
+
 	var body := VBoxContainer.new()
-	body.alignment = BoxContainer.ALIGNMENT_CENTER
+	body.alignment = BoxContainer.ALIGNMENT_BEGIN
 	body.add_theme_constant_override("separation", 16)
-	body.custom_minimum_size = Vector2(700.0, 0.0)
-	body.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	page.add_child(body)
+	body.custom_minimum_size = Vector2(720.0, 0.0)
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(body)
+
+	# --- graphics preset -------------------------------------------------- #
+	_preset_value = Label.new()
+	_preset_value.label_settings = MenuTheme.label_settings(19, MenuTheme.ACCENT)
+	_preset_value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_preset_value.custom_minimum_size = Vector2(200.0, 0.0)
+
+	var preset_row := HBoxContainer.new()
+	preset_row.add_theme_constant_override("separation", 8)
+	var preset_down := MenuTheme.make_button("<")
+	preset_down.custom_minimum_size = Vector2(52.0, 44.0)
+	preset_down.pressed.connect(_step_preset.bind(-1))
+	var preset_up := MenuTheme.make_button(">")
+	preset_up.custom_minimum_size = Vector2(52.0, 44.0)
+	preset_up.pressed.connect(_step_preset.bind(1))
+	preset_row.add_child(preset_down)
+	preset_row.add_child(_preset_value)
+	preset_row.add_child(preset_up)
+
+	body.add_child(MenuTheme.make_row("Качество графики", preset_row,
+		"Низкие — тени 90 м, разрешение 80%, растительность 50%, без SSAO и "
+		+ "свечения. Средние — тени 140 м, полное разрешение. Высокие — тени "
+		+ "190 м и SSAO. Меняет всё разом; отдельные пункты ниже можно "
+		+ "подкрутить после."))
+
+	# --- render scale ------------------------------------------------------ #
+	var scale_slider := HSlider.new()
+	scale_slider.min_value = 0.5
+	scale_slider.max_value = 1.0
+	scale_slider.step = 0.05
+	scale_slider.value = GameSettings.render_scale
+	scale_slider.custom_minimum_size = Vector2(300.0, 28.0)
+	_scale_value = Label.new()
+	_scale_value.label_settings = MenuTheme.label_settings(17, MenuTheme.ACCENT)
+	_scale_value.text = "%d%%" % roundi(GameSettings.render_scale * 100.0)
+	scale_slider.value_changed.connect(func(v: float) -> void:
+		_scale_value.text = "%d%%" % roundi(v * 100.0)
+		GameSettings.set_render_scale(v))
+	var scale_row := HBoxContainer.new()
+	scale_row.add_theme_constant_override("separation", 12)
+	scale_row.add_child(scale_slider)
+	scale_row.add_child(_scale_value)
+	body.add_child(MenuTheme.make_row("Разрешение 3D", scale_row,
+		"Сцена рисуется в этом разрешении и растягивается; интерфейс "
+		+ "остаётся чётким. Самый сильный рычаг, если упирается видеокарта: "
+		+ "80% — это 64% пикселей."))
+
+	# --- shadow distance --------------------------------------------------- #
+	var shadow_slider := HSlider.new()
+	shadow_slider.min_value = 40.0
+	shadow_slider.max_value = 300.0
+	shadow_slider.step = 10.0
+	shadow_slider.value = GameSettings.shadow_distance
+	shadow_slider.custom_minimum_size = Vector2(300.0, 28.0)
+	var shadow_value := Label.new()
+	shadow_value.label_settings = MenuTheme.label_settings(17, MenuTheme.ACCENT)
+	shadow_value.text = "%d м" % roundi(GameSettings.shadow_distance)
+	shadow_slider.value_changed.connect(func(v: float) -> void:
+		shadow_value.text = "%d м" % roundi(v)
+		GameSettings.set_shadow_distance(v))
+	var shadow_row := HBoxContainer.new()
+	shadow_row.add_theme_constant_override("separation", 12)
+	shadow_row.add_child(shadow_slider)
+	shadow_row.add_child(shadow_value)
+	body.add_child(MenuTheme.make_row("Дальность теней", shadow_row,
+		"Важнее разрешения тени: отрисовка теней игнорирует дальность "
+		+ "прорисовки растений, поэтому каждое дерево в этом радиусе "
+		+ "рисуется в карту теней заново."))
+
+	# --- ssao and glow ----------------------------------------------------- #
+	var ssao_box := CheckBox.new()
+	ssao_box.text = "SSAO (затенение в углах)"
+	ssao_box.button_pressed = GameSettings.ssao
+	ssao_box.add_theme_font_size_override("font_size", 17)
+	ssao_box.toggled.connect(func(on: bool) -> void: GameSettings.set_ssao(on))
+	body.add_child(MenuTheme.make_row("Затенение", ssao_box,
+		"На открытой местности заметно только под машиной и у корней "
+		+ "деревьев, а стоит около 1-2 мс на кадр."))
+
+	var glow_box := CheckBox.new()
+	glow_box.text = "Свечение ярких мест"
+	glow_box.button_pressed = GameSettings.glow
+	glow_box.add_theme_font_size_override("font_size", 17)
+	glow_box.toggled.connect(func(on: bool) -> void: GameSettings.set_glow(on))
+	body.add_child(MenuTheme.make_row("Свечение", glow_box, ""))
 
 	# --- frame rate limit ------------------------------------------------ #
 	_fps_value = Label.new()
@@ -141,6 +237,12 @@ func _build() -> void:
 	back.grab_focus()
 
 
+func _step_preset(direction: int) -> void:
+	GameSettings.set_quality_preset(
+		wrapi(GameSettings.quality_preset + direction, 0, 3))
+	_refresh()
+
+
 func _step_fps(direction: int) -> void:
 	var options: Array = GameSettings.FPS_OPTIONS
 	_fps_index = wrapi(_fps_index + direction, 0, options.size())
@@ -158,6 +260,8 @@ func _refresh() -> void:
 	_fps_index = maxi(0, options.find(GameSettings.max_fps))
 	_fps_value.text = GameSettings.fps_label(GameSettings.max_fps)
 	_vsync_value.text = GameSettings.vsync_label(GameSettings.vsync)
+	_preset_value.text = GameSettings.preset_label(GameSettings.quality_preset)
+	_scale_value.text = "%d%%" % roundi(GameSettings.render_scale * 100.0)
 
 	# Say so plainly when the two settings contradict each other, because
 	# "I set 240 and still see 75" is otherwise completely baffling.

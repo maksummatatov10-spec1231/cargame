@@ -44,6 +44,19 @@ extends Resource
 ## stay planted while canopies move.
 @export var wind_anchor := 0.6
 @export_range(0.0, 1.0) var roughness := 0.9
+## Render both faces of every polygon.
+##
+## Needed for flat foliage cards - a fern is a single-sided plane and vanishes
+## from behind without it. Wrong for closed shapes: a trunk or a rock has back
+## faces that can never be seen, so drawing them is pure waste. Measured at
+## 49% of all visible vegetation triangles.
+##
+## It also has a hidden cost. render_forward_clustered.cpp:3795 requires
+## cull_mode == CULL_BACK before a surface can use the shared depth-only
+## shadow material and the importer's position-only shadow mesh; two-sided
+## surfaces run the full shader into the shadow map and re-fetch the whole
+## 52-byte vertex instead of 12 bytes.
+@export var two_sided := true
 
 @export_group("Performance")
 ## Stop drawing past this distance in metres. 0 = always draw.

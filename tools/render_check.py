@@ -413,6 +413,202 @@ def test_performance():
     check("no full-scene GI passes are enabled", not heavy, ", ".join(heavy))
 
 
+def test_backface_culling():
+    """Solid vegetation must not be rendered two-sided.
+
+    cull_disabled rasterises every triangle twice over - once for each
+    facing - and for a closed shape the back faces can never be seen. It also
+    disqualifies the surface from FLAG_USES_SHARED_SHADOW_MATERIAL
+    (render_forward_clustered.cpp:3795), which is what lets Godot draw it into
+    the shadow map with the trivial depth-only material and the importer's
+    12-byte position-only shadow mesh instead of the full shader and the
+    52-byte vertex.
+    """
+    print("\n== vegetation back-face culling ==")
+    src = open(os.path.join(ROOT, "scripts", "forest.gd")).read()
+    manifest = json.load(open(os.path.join(ROOT, "assets", "forest",
+                                           "forest_manifest.json")))
+    tris = {a["name"]: a["tris"] for a in manifest["assets"]}
+
+    check("the shader picks its cull mode per species",
+          "cull_disabled\" if entry.two_sided else \"cull_back" in src)
+    check("two_sided is an editable property",
+          "@export var two_sided" in
+          open(os.path.join(ROOT, "scripts", "plant_species.gd")).read())
+
+    table = re.search(r"const DEFAULT_SPECIES := \[(.*?)\n\]", src, re.S)
+    check("the species table can be parsed", table is not None)
+    if table is None:
+        return
+
+    SOLID = ("tree", "tree_lod", "tree_far", "rock_a", "rock_b", "rock_c")
+    two_sided_tris = 0
+    single_tris = 0
+    wrong = []
+    for block in re.finditer(r'\{"mesh_name": "(\w+)", "count": (\d+)(.*?)\},',
+                             table.group(1), re.S):
+        name, count, body = block.group(1), int(block.group(2)), block.group(3)
+        if name not in tris:
+            continue
+        two = '"two_sided": false' not in body
+        total = tris[name] * count
+        if two:
+            two_sided_tris += total
+        else:
+            single_tris += total
+        if name in SOLID and two:
+            wrong.append(name)
+
+    print("  single-sided (solid): %s tris" % format(single_tris, ","))
+    print("  two-sided (foliage):  %s tris" % format(two_sided_tris, ","))
+    saving = single_tris / max(single_tris + two_sided_tris, 1)
+    print("  %.0f%% of vegetation geometry no longer rasterises back faces"
+          % (100 * saving))
+
+    check("trees and rocks are single sided", not wrong, ", ".join(wrong))
+    # 79% is the correct answer, not a shortfall: the remaining 21% is flat
+    # foliage, which must stay two-sided or ferns and grass disappear when
+    # seen from behind. The threshold checks that the solid geometry - which
+    # is where the waste was - has been converted.
+    check("the solid geometry is single sided", saving > 0.7,
+          "only %.0f%% - the trees or rocks are still two-sided"
+          % (100 * saving))
+    # Flat cards genuinely need both faces - a fern would vanish from behind.
+    check("flat foliage is still two sided", two_sided_tris > 0,
+          "everything is single sided, foliage will disappear from behind")
+
+
+def test_shader_variants():
+    """The crush loop must not be compiled into shaders that never crush.
+
+    `if (crushable)` was a uniform branch, so every vegetation vertex shader -
+    trees included - still carried the 8-iteration loop over crush_points.
+    The shader is assembled per species now, so a tree's vertex shader does
+    not contain the loop at all.
+    """
+    print("\n== shader variants ==")
+    src = open(os.path.join(ROOT, "scripts", "forest.gd")).read()
+
+    check("the shader is assembled from parts",
+          "SHADER_HEADER" in src and "SHADER_CRUSH" in src
+          and "SHADER_TAIL" in src)
+    check("the crush block is only pasted in when needed",
+          "SHADER_CRUSH if crushable else" in src)
+    check("the crush uniforms are only declared when needed",
+          "SHADER_CRUSH_UNIFORMS if crushable else" in src)
+    check("there is no uniform crushable branch left",
+          "uniform bool crushable" not in src)
+    check("shaders are cached so species share compiled programs",
+          "_shader_cache" in src)
+
+    # The loop must live in the crush fragment and nowhere else.
+    crush = re.search(r'const SHADER_CRUSH := """(.*?)"""', src, re.S)
+    uniforms = re.search(r'const SHADER_UNIFORMS := """(.*?)"""', src, re.S)
+    check("the 8-iteration loop is inside the optional block",
+          crush is not None and "for (int i = 0; i < 8; i++)" in crush.group(1))
+    check("and not in the part every species gets",
+          uniforms is not None
+          and "for (int i = 0; i < 8; i++)" not in uniforms.group(1))
+
+
+def test_hidden_car_interior():
+    """The cabin must be hidden in the chase view.
+
+    Measured on the BMW's own material list: 56,493 of its 100,582 triangles
+    belong to interior materials, and the dashboard alone is 26,723. None of
+    it is visible from behind the car. The Z-buffer would reject the pixels,
+    but the vertices are still transformed and the draw calls still issued -
+    hiding the surfaces removes all of it.
+    """
+    print("\n== car interior is hidden in the chase view ==")
+    model = open(os.path.join(ROOT, "scripts", "car_model.gd")).read()
+    cam = open(os.path.join(ROOT, "scripts", "chase_camera.gd")).read()
+
+    check("the model can hide its cabin", "set_interior_visible" in model)
+    check("the camera drives it", "_set_interior_visible" in cam)
+    check("it is shown again in the hood view",
+          "_set_interior_visible(mode == Mode.HOOD)" in cam)
+
+    # Verify the material tokens actually match the asset, rather than
+    # assuming. A typo here would silently hide nothing at all.
+    tokens = re.search(r"const INTERIOR_MATERIALS := \[(.*?)\]", model, re.S)
+    check("the interior material list can be parsed", tokens is not None)
+    if tokens is None:
+        return
+    names = re.findall(r'"([^"]+)"', tokens.group(1))
+
+    gltf = json.load(open(os.path.join(ROOT, "assets", "car", "bmw_1m.gltf")))
+    materials = [m.get("name", "") for m in gltf["materials"]]
+    per_material = {}
+    for mesh in gltf["meshes"]:
+        for prim in mesh["primitives"]:
+            mat = prim.get("material")
+            if mat is None or "indices" not in prim:
+                continue
+            key = materials[mat]
+            count = gltf["accessors"][prim["indices"]]["count"] // 3
+            per_material[key] = per_material.get(key, 0) + count
+
+    hidden = 0
+    matched = 0
+    for name, count in per_material.items():
+        if any(tok in name.lower() for tok in names):
+            hidden += count
+            matched += 1
+    total = sum(per_material.values())
+    print("  %d of %d materials matched, %s of %s triangles hidden (%.0f%%)"
+          % (matched, len(per_material), format(hidden, ","),
+             format(total, ","), 100.0 * hidden / total))
+
+    check("the tokens match real materials in the asset", matched > 10,
+          "only %d matched - the list is out of step with the model" % matched)
+    check("hiding the cabin removes a worthwhile share", hidden > total * 0.4,
+          "only %.0f%%" % (100.0 * hidden / total))
+
+    # Nothing that is visible from outside may be caught by the tokens.
+    EXTERIOR = ("livrea", "chassis", "rt_rim", "rt_battistrada", "vetri_fanali",
+                "dischi_freni", "car_pinzafreni", "griglia", "mirror")
+    caught = [m for m in per_material
+              if any(tok in m.lower() for tok in names)
+              and any(e in m.lower() for e in EXTERIOR)]
+    check("no exterior surface is hidden by mistake", not caught,
+          ", ".join(caught))
+
+
+def test_quality_presets():
+    print("\n== graphics presets ==")
+    gs = open(os.path.join(ROOT, "scripts", "game_settings.gd")).read()
+    menu = open(os.path.join(ROOT, "scripts", "settings_menu.gd")).read()
+
+    for name in ("render_scale", "shadow_distance", "shadow_size", "ssao",
+                 "glow", "vegetation_density"):
+        check("  %s is a setting" % name, "var %s" % name in gs)
+
+    check("there is a single preset control", "set_quality_preset" in gs)
+    check("presets are exposed in the menu", "Качество графики" in menu)
+    check("render scale is applied to the viewport",
+          "scaling_3d_scale" in gs)
+    check("shadow atlas size is applied",
+          "directional_shadow_atlas_set_size" in gs)
+    check("shadow distance is applied to the sun",
+          "directional_shadow_max_distance" in gs)
+    check("ssao and glow are applied to the environment",
+          "ssao_enabled" in gs and "glow_enabled" in gs)
+
+    # Render scale is the strongest lever, so the low preset must use it.
+    m = re.search(r"0:\s*#\s*Низкие(.*?)1:", gs, re.S)
+    check("the low preset actually lowers something", m is not None)
+    if m:
+        body = m.group(1)
+        print("  low preset: %s" % ", ".join(
+            l.strip() for l in body.strip().splitlines() if "=" in l))
+        check("  it reduces the render scale", "render_scale = 0.8" in body)
+        check("  it shortens the shadow distance",
+              re.search(r"shadow_distance = (\d+)", body) is not None
+              and int(re.search(r"shadow_distance = (\d+)", body).group(1)) < 140)
+        check("  it thins the vegetation", "vegetation_density = 0.5" in body)
+
+
 def test_input():
     print("\n== controls ==")
     text = open(os.path.join(ROOT, "project.godot")).read()
@@ -441,6 +637,10 @@ def main():
     test_effects()
     test_clouds()
     test_performance()
+    test_backface_culling()
+    test_shader_variants()
+    test_hidden_car_interior()
+    test_quality_presets()
     test_input()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES
                     else "FAILURES: " + ", ".join(FAILURES)))

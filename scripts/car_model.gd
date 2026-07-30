@@ -16,16 +16,39 @@ extends Node3D
 
 const CORNERS := ["lf", "rf", "lr", "rr"]
 
+## Material name fragments that identify cabin surfaces. Taken from the
+## asset's own material list, so this is not guesswork: every INT_* material
+## plus the glass that is only ever seen from inside.
+const INTERIOR_MATERIALS := [
+	"int_", "cockpit", "cuciture", "pedali", "pedana", "leather",
+	"volante", "cinture", "speakers", "display", "rotelline",
+	"door_grid", "velluto", "stoffa", "defrost_interno",
+]
+
 @export var model_scene : PackedScene
 ## Degrees of steering wheel rotation at full lock (about 1.3 turns each way).
 @export var steering_wheel_ratio := 470.0
 
 var body_part : Node3D
 var steering_part : Node3D
+
 var wheel_parts := {}
 var hub_parts := {}
 
 var _steer_angle := 0.0
+
+## Surfaces that belong to the cabin. Hidden in the chase view, shown in the
+## bumper/hood view.
+##
+## Measured on the BMW: 56,411 of its 100,582 triangles are interior - the
+## dashboard alone (INT_Plaastica_NERA) is 26,723, more than a quarter of the
+## whole car. From behind the car none of it is visible; the Z-buffer throws
+## the pixels away but the vertices are still transformed, the draw calls are
+## still issued and the surfaces are still sorted every frame. Hiding a
+## surface removes all of that, unlike relying on depth rejection.
+var _interior: Array[GeometryInstance3D] = []
+var _interior_visible := true
+
 
 
 func _ready() -> void:
@@ -35,6 +58,7 @@ func _ready() -> void:
 	var root := model_scene.instantiate()
 	add_child(root)
 	_collect(root)
+	_find_interior(root)
 	# The wheels are moved out of the imported scene and under the RayWheels.
 	# Deferring it keeps Godot from complaining about re-parenting while the
 	# tree is still being set up.
@@ -58,6 +82,43 @@ func _collect(node: Node) -> void:
 				hub_parts[c] = node
 	for child in node.get_children():
 		_collect(child)
+
+
+## Collects the cabin surfaces so they can be switched off in the chase view.
+func _find_interior(node: Node) -> void:
+	var mesh_node := node as MeshInstance3D
+	if mesh_node != null and mesh_node.mesh != null:
+		var interior := false
+		for i in mesh_node.mesh.get_surface_count():
+			var mat := mesh_node.mesh.surface_get_material(i)
+			if mat == null:
+				continue
+			var id := String(mat.resource_name).to_lower()
+			for token in INTERIOR_MATERIALS:
+				if id.contains(token):
+					interior = true
+					break
+			if interior:
+				break
+		if interior:
+			_interior.append(mesh_node)
+	for child in node.get_children():
+		_find_interior(child)
+
+
+## Shows or hides the cabin. Called by the camera when the view changes.
+func set_interior_visible(shown: bool) -> void:
+	if shown == _interior_visible:
+		return
+	_interior_visible = shown
+	for part in _interior:
+		if is_instance_valid(part):
+			part.visible = shown
+
+
+## How many surfaces were classified as interior, for the checks.
+func interior_surface_count() -> int:
+	return _interior.size()
 
 
 ## Moves the wheel and hub meshes under the matching [RayWheel] so the

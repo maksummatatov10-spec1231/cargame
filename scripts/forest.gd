@@ -18,15 +18,35 @@ extends Node3D
 ## start, because a StaticBody per grass tuft would cost far more than it is
 ## worth and the car cannot reach the far corners quickly anyway.
 
-const WIND_SHADER := """
+# The vegetation shader is assembled per species rather than shared verbatim,
+# because two render_mode choices have a large, measurable cost and the right
+# choice differs between a tree trunk and a fern card.
+#
+# CULLING. The old shader was cull_disabled for everything. For a closed shape
+# - a trunk, a branch, a rock - the back faces are never visible, so drawing
+# them is pure waste: measured at 419,135 of the 859,479 visible vegetation
+# triangles, i.e. 49%. Worse, render_forward_clustered.cpp:3795 requires
+# cull_mode == CULL_BACK before a surface may use FLAG_USES_SHARED_SHADOW_MATERIAL.
+# Without that flag the shadow pass runs this whole shader instead of the
+# trivial depth-only default, and mesh_get_shadow_mesh() is never used, so the
+# shadow pass re-fetches the full 52-byte vertex instead of the 12-byte
+# position-only one. Flat foliage genuinely needs two-sided rendering; solid
+# shapes do not.
+#
+# CRUSHING. `if (crushable)` is a uniform branch, so the GPU still carries the
+# 8-iteration loop in every vegetation vertex shader, trees included. Species
+# that can never be crushed now get a shader compiled without it at all.
+const SHADER_HEADER := """
 shader_type spatial;
 // depth_prepass_alpha runs an alpha-discard prepass. This shader is fully
 // opaque and never writes ALPHA, so the prepass had nothing to keep and the
 // plants rendered invisible while their collision still worked - you could
 // drive through trees you could not see. Plain opaque rendering is correct
 // here, and cheaper.
-render_mode cull_disabled, diffuse_burley;
+render_mode %s, diffuse_burley;
+"""
 
+const SHADER_UNIFORMS := """
 uniform vec3 tint : source_color = vec3(1.0);
 uniform float wind_strength = 0.06;
 uniform float wind_speed = 1.1;
@@ -35,14 +55,6 @@ uniform float wind_scale = 0.18;
 // while canopies sway.
 uniform float anchor_height = 0.6;
 uniform float roughness_value = 0.85;
-
-// Crush points, one per wheel touching the ground: xyz is the world position
-// of the contact patch, w is how strongly it is pressing (1 under the wheel,
-// fading to 0 as the plant recovers). Small plants have no collision, so this
-// is what makes driving over them look like anything at all.
-uniform vec4 crush_points[8];
-uniform float crush_radius = 1.4;
-uniform bool crushable = false;
 
 varying float sway_amount;
 
@@ -57,41 +69,55 @@ void vertex() {
 	sway_amount = sway;
 	VERTEX.x += sway * h * wind_strength;
 	VERTEX.z += cos(t * 0.9 + phase) * h * wind_strength * 0.6;
+"""
 
-	if (crushable) {
-		// Find the wheel pressing hardest on this plant. Only the horizontal
-		// distance matters: a wheel directly above should flatten it whatever
-		// the ride height.
-		float best = 0.0;
-		vec3 push = vec3(0.0);
-		for (int i = 0; i < 8; i++) {
-			float strength = crush_points[i].w;
-			if (strength <= 0.001) {
-				continue;
-			}
-			vec2 delta = world.xz - crush_points[i].xz;
-			float d = length(delta);
-			if (d > crush_radius) {
-				continue;
-			}
-			// Full effect under the wheel, easing off towards the edge.
-			float amount = (1.0 - smoothstep(0.0, crush_radius, d)) * strength;
-			if (amount > best) {
-				best = amount;
-				// Lay the plant away from the wheel centre, so it folds in the
-				// direction the tyre rolled over it rather than collapsing
-				// straight down.
-				vec2 dir = d > 0.001 ? delta / d : vec2(1.0, 0.0);
-				push = vec3(dir.x, 0.0, dir.y);
-			}
+## Pasted into the vertex shader only for species that can be crushed.
+const SHADER_CRUSH := """
+	// Find the wheel pressing hardest on this plant. Only the horizontal
+	// distance matters: a wheel directly above should flatten it whatever
+	// the ride height.
+	float best = 0.0;
+	vec3 push = vec3(0.0);
+	for (int i = 0; i < 8; i++) {
+		float strength = crush_points[i].w;
+		if (strength <= 0.001) {
+			continue;
 		}
-		if (best > 0.0) {
-			// Bend from the base: the top travels furthest, the roots stay put.
-			float bend = best * h;
-			VERTEX.xz += push.xz * bend * 1.35;
-			VERTEX.y -= bend * 0.75;
+		vec2 delta = world.xz - crush_points[i].xz;
+		float d = length(delta);
+		if (d > crush_radius) {
+			continue;
+		}
+		// Full effect under the wheel, easing off towards the edge.
+		float amount = (1.0 - smoothstep(0.0, crush_radius, d)) * strength;
+		if (amount > best) {
+			best = amount;
+			// Lay the plant away from the wheel centre, so it folds in the
+			// direction the tyre rolled over it rather than collapsing
+			// straight down.
+			vec2 dir = d > 0.001 ? delta / d : vec2(1.0, 0.0);
+			push = vec3(dir.x, 0.0, dir.y);
 		}
 	}
+	if (best > 0.0) {
+		// Bend from the base: the top travels furthest, the roots stay put.
+		float bend = best * h;
+		VERTEX.xz += push.xz * bend * 1.35;
+		VERTEX.y -= bend * 0.75;
+	}
+"""
+
+## Uniforms only the crushable variant declares.
+const SHADER_CRUSH_UNIFORMS := """
+// Crush points, one per wheel touching the ground: xyz is the world position
+// of the contact patch, w is how strongly it is pressing (1 under the wheel,
+// fading to 0 as the plant recovers). Small plants have no collision, so this
+// is what makes driving over them look like anything at all.
+uniform vec4 crush_points[8];
+uniform float crush_radius = 1.4;
+"""
+
+const SHADER_TAIL := """
 }
 
 void fragment() {
@@ -120,16 +146,16 @@ const DEFAULT_SPECIES := [
 		"max_slope": 0.34, "tint": Color(0.30, 0.40, 0.20), "solid": true,
 		"collision_radius": 0.55, "wind_anchor": 1.2, "wind": 0.035,
 		"max_distance": 80.0, "cull_distance": 170.0, "cast_shadows": true,
-		"mesh_height": 6.87},
+		"mesh_height": 6.87, "two_sided": false},
 	{"mesh_name": "tree_lod", "count": 180, "scale_min": 0.85, "scale_max": 1.5,
 		"max_slope": 0.34, "tint": Color(0.29, 0.39, 0.19), "solid": true,
 		"collision_radius": 0.55, "wind_anchor": 1.2, "wind": 0.035,
 		"min_distance": 80.0, "max_distance": 170.0, "cull_distance": 240.0,
-		"lod_bias": 2.0, "mesh_height": 6.84},
+		"lod_bias": 2.0, "mesh_height": 6.84, "two_sided": false},
 	{"mesh_name": "tree_far", "count": 220, "scale_min": 0.85, "scale_max": 1.5,
 		"max_slope": 0.34, "tint": Color(0.28, 0.38, 0.19), "solid": false,
 		"wind_anchor": 1.2, "wind": 0.03, "min_distance": 170.0,
-		"cull_distance": 340.0, "lod_bias": 4.0, "mesh_height": 6.81},
+		"cull_distance": 340.0, "lod_bias": 4.0, "mesh_height": 6.81, "two_sided": false},
 	{"mesh_name": "fern_a", "count": 520, "scale_min": 0.7, "scale_max": 1.3,
 		"max_slope": 0.42, "tint": Color(0.26, 0.40, 0.18), "solid": false,
 		"wind_anchor": 0.1, "wind": 0.09, "cull_distance": 75.0,
@@ -158,17 +184,17 @@ const DEFAULT_SPECIES := [
 		"max_slope": 1.0, "tint": Color(0.40, 0.39, 0.37), "solid": true,
 		"collision_radius": 0.9, "wind_anchor": 99.0, "wind": 0.0,
 		"cull_distance": 200.0, "cast_shadows": true, "prefers_slopes": true,
-		"ground_lean": 0.35, "roughness": 0.6, "mesh_height": 4.18},
+		"ground_lean": 0.35, "roughness": 0.6, "mesh_height": 4.18, "two_sided": false},
 	{"mesh_name": "rock_b", "count": 80, "scale_min": 0.45, "scale_max": 0.8,
 		"max_slope": 1.0, "tint": Color(0.38, 0.37, 0.36), "solid": true,
 		"collision_radius": 0.7, "wind_anchor": 99.0, "wind": 0.0,
 		"cull_distance": 200.0, "prefers_slopes": true, "ground_lean": 0.35,
-		"roughness": 0.6, "mesh_height": 2.65},
+		"roughness": 0.6, "mesh_height": 2.65, "two_sided": false},
 	{"mesh_name": "rock_c", "count": 120, "scale_min": 0.40, "scale_max": 0.7,
 		"max_slope": 1.0, "tint": Color(0.42, 0.41, 0.39), "solid": true,
 		"collision_radius": 0.5, "wind_anchor": 99.0, "wind": 0.0,
 		"cull_distance": 200.0, "prefers_slopes": true, "ground_lean": 0.35,
-		"roughness": 0.6, "mesh_height": 3.29},
+		"roughness": 0.6, "mesh_height": 3.29, "two_sided": false},
 ]
 
 ## Where the converted assets live.
@@ -225,6 +251,10 @@ var _rng := RandomNumberGenerator.new()
 var _placed := 0
 var _colliders := 0
 var _density_scale := 1.0
+## Shaders cached by their code, so the twelve species share a handful of
+## compiled programs instead of one each. Godot sorts draws by material and
+## shader, so fewer distinct shaders means fewer state changes.
+var _shader_cache: Dictionary = {}
 
 
 func _ready() -> void:
@@ -238,6 +268,7 @@ func build() -> void:
 		child.queue_free()
 	_placed = 0
 	_colliders = 0
+	_shader_cache.clear()
 
 	var found := get_tree().get_nodes_in_group("terrain")
 	if found.is_empty():
@@ -532,12 +563,27 @@ func _is_crushable(entry: PlantSpecies) -> bool:
 	return not entry.solid
 
 
-func _make_material(entry: PlantSpecies) -> ShaderMaterial:
+## Builds the exact shader a species needs and nothing more.
+func _shader_for(entry: PlantSpecies) -> Shader:
+	var crushable := _is_crushable(entry)
+	var cull := "cull_disabled" if entry.two_sided else "cull_back"
+	var code := SHADER_HEADER % cull
+	code += SHADER_CRUSH_UNIFORMS if crushable else ""
+	code += SHADER_UNIFORMS
+	code += SHADER_CRUSH if crushable else ""
+	code += SHADER_TAIL
+
+	if _shader_cache.has(code):
+		return _shader_cache[code]
 	var shader := Shader.new()
-	shader.code = WIND_SHADER
+	shader.code = code
+	_shader_cache[code] = shader
+	return shader
+
+
+func _make_material(entry: PlantSpecies) -> ShaderMaterial:
 	var mat := ShaderMaterial.new()
-	mat.shader = shader
-	mat.set_shader_parameter("crushable", _is_crushable(entry))
+	mat.shader = _shader_for(entry)
 	mat.set_shader_parameter("tint",
 		Vector3(entry.tint.r, entry.tint.g, entry.tint.b))
 	mat.set_shader_parameter("wind_strength", entry.wind)

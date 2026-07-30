@@ -68,6 +68,7 @@ var _curr_target := Transform3D.IDENTITY
 var _prev_velocity := Vector3.ZERO
 var _curr_velocity := Vector3.ZERO
 var _has_sample := false
+var _model: Node = null
 
 @onready var arm : SpringArm3D = $SpringArm3D
 @onready var camera : Camera3D = $SpringArm3D/Camera3D
@@ -136,8 +137,19 @@ func set_target(node: Node3D) -> void:
 	if _vehicle == null:
 		_vehicle = _target.get_parent() as Vehicle
 	arm.clear_excluded_objects()
+	_model = null
 	_exclude_vehicle_bodies()
 	_snap_behind_target()
+
+
+## Switches the car's cabin geometry on or off, if the model supports it.
+func _set_interior_visible(shown: bool) -> void:
+	if _model == null or not is_instance_valid(_model):
+		_model = null
+		if _vehicle != null and is_instance_valid(_vehicle):
+			_model = _vehicle.get_node_or_null("Smooth/Model")
+	if _model != null and _model.has_method("set_interior_visible"):
+		_model.call("set_interior_visible", shown)
 
 
 ## Heading of a transform: the direction its -Z axis points, flattened onto
@@ -226,6 +238,11 @@ func _process(delta: float) -> void:
 	var velocity := _prev_velocity.lerp(_curr_velocity, f)
 	var speed := velocity.length()
 	var t := clampf(speed / speed_reference, 0.0, 1.0)
+
+	# The cabin is 56% of the car's triangles and is only visible from the
+	# hood view. Hiding it in the chase views removes the draw calls and the
+	# vertex work outright, which depth rejection alone cannot do.
+	_set_interior_visible(mode == Mode.HOOD)
 
 	if mode == Mode.HOOD:
 		_update_hood(target_pos, target_yaw_now, f)
