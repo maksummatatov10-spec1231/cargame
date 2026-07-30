@@ -27,6 +27,7 @@ around.
 | Key | Action |
 | --- | --- |
 | `W` / `↑` | throttle |
+| `Shift` | turbo — extra boost while the throttle is open |
 | `S` / `↓` | brake (hold at a standstill to select reverse) |
 | `A` `D` / `←` `→` | steer |
 | `Space` | handbrake |
@@ -151,6 +152,14 @@ On top of that:
 
 ### Drivetrain
 
+**Driveline inertia is reflected through the gearbox onto the wheels.** This one
+line matters more than any other in the file: in first gear the engine's
+0.24 kg·m² becomes 0.24 × 12.9² ≈ 40 kg·m², against a wheel's own 1.2 kg·m².
+Leaving it out makes the wheels ~30× too light, so a tick of drive torque spins
+them up ~18 rad/s, the tyre slams back, and the car judders in place instead of
+pulling away. That was a real bug; `sim_check.py` now counts spin reversals and
+sustained jerk to keep it from returning.
+
 Turbocharged straight-six torque curve (450 Nm plateau from 3 000 to 5 900 rpm),
 six-speed gearbox with real 1M ratios, 3.15 final drive, automatic shifting with
 a 0.22 s clutch-open window, and a **limited slip differential** that biases
@@ -207,14 +216,25 @@ Those numbers are all in the right ballpark for a real BMW 1M (4.9 s claimed
 | `tools/anim_check.py` | wheel roll matches ground speed, Ackermann, speed sensitive lock, airborne coasting, pivot geometry |
 | `tools/camera_check.py` | camera never clips inside the car, view direction never degenerate, rig wiring |
 | `tools/typecheck.py` | argument types and arity of every call to a project function |
+| `tools/render_check.py` | fog/ambient/tonemap values, sun and shadows, smoke, controls |
 | `tools/project_check.py` | scene resource integrity, glTF validity, input map, node paths |
 
-Run all five:
+Run all six:
 
 ```bash
-python3 tools/typecheck.py && python3 tools/sim_check.py \
-  && python3 tools/anim_check.py && python3 tools/camera_check.py \
-  && python3 tools/project_check.py
+python3 tools/typecheck.py && python3 tools/render_check.py \
+  && python3 tools/sim_check.py && python3 tools/anim_check.py \
+  && python3 tools/camera_check.py && python3 tools/project_check.py
+```
+
+`render_check.py` evaluates Godot's own fog equation rather than trusting the
+values look reasonable. The scene once shipped with a 40 m tall height-fog layer
+at density 0.02; since the car sits at y ≈ 0.5 m the whole play area was inside
+it, and the check reports what that actually did:
+
+```
+fog covers 74.6% of a pixel at 30 m   <- the washed-out build
+fog covers  6.4% of a pixel at 30 m   <- now
 ```
 
 `typecheck.py` is worth singling out. `gdparse` only checks syntax and `gdlint`

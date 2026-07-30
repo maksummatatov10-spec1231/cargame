@@ -6,15 +6,17 @@
 [ext_resource type="Script" path="res://scripts/hud.gd" id="4_hud"]
 
 [sub_resource type="ProceduralSkyMaterial" id="Sky"]
-sky_top_color = Color(0.24, 0.42, 0.78, 1)
-sky_horizon_color = Color(0.72, 0.81, 0.9, 1)
-sky_curve = 0.18
-sky_energy_multiplier = 1.15
-ground_bottom_color = Color(0.21, 0.24, 0.2, 1)
-ground_horizon_color = Color(0.66, 0.72, 0.76, 1)
-ground_curve = 0.06
-sun_angle_max = 12.0
-sun_curve = 0.08
+sky_top_color = Color(0.16, 0.35, 0.72, 1)
+sky_horizon_color = Color(0.68, 0.78, 0.89, 1)
+sky_curve = 0.13
+sky_energy_multiplier = 1.0
+ground_bottom_color = Color(0.17, 0.19, 0.17, 1)
+ground_horizon_color = Color(0.6, 0.67, 0.73, 1)
+ground_curve = 0.04
+ground_energy_multiplier = 1.0
+sun_angle_max = 8.0
+sun_curve = 0.05
+use_debanding = true
 
 [sub_resource type="Sky" id="SkyRes"]
 sky_material = SubResource("Sky")
@@ -23,41 +25,75 @@ radiance_size = 4
 [sub_resource type="Environment" id="Env"]
 background_mode = 2
 sky = SubResource("SkyRes")
+; Ambient comes from the sky, but at a fraction of full strength. At 1.0 every
+; surface is lit from every direction at once, which flattens the car and is a
+; large part of why the old scene looked washed out.
 ambient_light_source = 3
-ambient_light_color = Color(0.72, 0.79, 0.9, 1)
-ambient_light_sky_contribution = 0.85
-ambient_light_energy = 1.0
+ambient_light_color = Color(0.5, 0.58, 0.72, 1)
+ambient_light_sky_contribution = 0.42
+ambient_light_energy = 0.85
 reflected_light_source = 2
+; ACES gives a filmic highlight roll-off instead of clipping to white. Exposure
+; is pulled back and white raised so the sky has somewhere to go.
 tonemap_mode = 3
-tonemap_exposure = 1.0
-tonemap_white = 6.0
+tonemap_exposure = 0.82
+tonemap_white = 8.0
 ssao_enabled = true
-ssao_radius = 1.4
-ssao_intensity = 1.6
-ssao_detail = 0.6
-ssil_enabled = false
-sdfgi_enabled = false
+ssao_radius = 1.1
+ssao_intensity = 2.6
+ssao_power = 1.8
+ssao_detail = 0.9
+ssao_light_affect = 0.15
+ssao_ao_channel_affect = 0.4
+ssil_enabled = true
+ssil_radius = 3.5
+ssil_intensity = 0.7
+ssil_sharpness = 0.98
+ssr_enabled = true
+ssr_max_steps = 48
+ssr_fade_in = 0.2
+ssr_fade_out = 6.0
+ssr_depth_tolerance = 0.4
+sdfgi_enabled = true
+sdfgi_use_occlusion = true
+sdfgi_bounce_feedback = 0.6
+sdfgi_cascades = 4
+sdfgi_min_cell_size = 0.15
+sdfgi_y_scale = 2
+sdfgi_energy = 1.0
 glow_enabled = true
-glow_intensity = 0.5
+glow_normalized = true
+glow_intensity = 0.55
 glow_strength = 0.9
-glow_bloom = 0.08
+glow_bloom = 0.02
 glow_blend_mode = 1
-glow_hdr_threshold = 1.1
+glow_hdr_threshold = 1.35
+glow_hdr_scale = 2.0
+; Distance haze only. The previous scene had a 40 m tall fog layer, which meant
+; the whole play area sat *inside* it - about 73% of every pixel was fog colour,
+; and that is what bleached the image out. Height fog is off, the density is an
+; order of magnitude lower, and aerial perspective ties the far ground into the
+; sky the way real atmosphere does.
 fog_enabled = true
-fog_light_color = Color(0.72, 0.79, 0.88, 1)
-fog_light_energy = 1.0
-fog_sun_scatter = 0.18
-fog_density = 0.0016
-fog_sky_affect = 0.25
-fog_height = 40.0
-fog_height_density = 0.02
+fog_mode = 0
+fog_light_color = Color(0.62, 0.72, 0.86, 1)
+fog_light_energy = 0.85
+fog_sun_scatter = 0.32
+fog_density = 0.0022
+fog_aerial_perspective = 0.55
+fog_sky_affect = 0.0
+fog_height = -80.0
+fog_height_density = 0.0
 adjustment_enabled = true
-adjustment_brightness = 1.02
-adjustment_contrast = 1.06
-adjustment_saturation = 1.08
+adjustment_brightness = 1.0
+adjustment_contrast = 1.18
+adjustment_saturation = 1.22
 
 [sub_resource type="CameraAttributesPractical" id="CamAttr"]
-dof_blur_far_enabled = false
+dof_blur_far_enabled = true
+dof_blur_far_distance = 90.0
+dof_blur_far_transition = 60.0
+dof_blur_amount = 0.06
 auto_exposure_enabled = false
 
 [sub_resource type="LabelSettings" id="BigLabel"]
@@ -84,26 +120,33 @@ camera_attributes = SubResource("CamAttr")
 
 [node name="Sun" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.8434, -0.2903, 0.4523, 0, 0.8415, 0.5402, -0.5373, -0.4556, 0.7098, 0, 28, 0)
-light_color = Color(1, 0.96, 0.89, 1)
-light_energy = 1.35
+light_color = Color(1, 0.955, 0.878, 1)
+light_energy = 2.6
+light_indirect_energy = 1.0
+light_specular = 1.0
+; A real sun subtends about half a degree. Giving the light an angular size
+; turns on PCSS, so contact shadows are sharp and distant ones spread out -
+; the single biggest upgrade to how grounded the car looks.
 light_angular_distance = 0.55
 shadow_enabled = true
-shadow_bias = 0.03
-shadow_normal_bias = 1.4
-shadow_blur = 1.1
+shadow_bias = 0.02
+shadow_normal_bias = 1.2
+shadow_opacity = 1.0
+shadow_blur = 1.0
 directional_shadow_mode = 2
-directional_shadow_split_1 = 0.05
-directional_shadow_split_2 = 0.17
-directional_shadow_split_3 = 0.45
+directional_shadow_split_1 = 0.04
+directional_shadow_split_2 = 0.13
+directional_shadow_split_3 = 0.4
 directional_shadow_blend_splits = true
-directional_shadow_fade_start = 0.9
-directional_shadow_max_distance = 220.0
-directional_shadow_pancake_size = 30.0
+directional_shadow_fade_start = 0.92
+directional_shadow_max_distance = 260.0
+directional_shadow_pancake_size = 25.0
 
 [node name="Fill" type="DirectionalLight3D" parent="."]
 transform = Transform3D(-0.7071, 0.3536, -0.6124, 0, 0.866, 0.5, 0.7071, 0.3536, -0.6124, 0, 20, 0)
-light_color = Color(0.78, 0.85, 1, 1)
-light_energy = 0.22
+light_color = Color(0.62, 0.74, 1, 1)
+light_energy = 0.14
+light_specular = 0.0
 shadow_enabled = false
 
 [node name="Car" parent="." instance=ExtResource("1_car")]

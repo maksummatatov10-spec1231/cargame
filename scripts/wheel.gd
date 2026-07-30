@@ -82,6 +82,14 @@ extends RayCast3D
 ## the tyre force is fully built up; this is what keeps the model stable at
 ## walking pace instead of dividing by a near-zero velocity.
 @export var relaxation_length := 0.42
+## Slowest the tyre force is allowed to respond, in seconds.
+##
+## The relaxation time is length/speed, so at walking pace it works out at over
+## a second. The wheel itself spins up in milliseconds, so the force lags far
+## behind, the wheel runs away, then the force catches up and snaps it back -
+## a jolt every time you pull away. Capping the time constant keeps the tyre
+## responsive at low speed without giving up the transient behaviour at speed.
+@export var max_relaxation_time := 0.08
 ## Rolling resistance coefficient.
 @export var rolling_resistance := 0.014
 ## Radial stiffness of the tyre carcass in N/m. The sidewall is a spring in
@@ -111,6 +119,14 @@ var contact_point := Vector3.ZERO
 var tyre_force := Vector2.ZERO      ## x = longitudinal, y = lateral (N)
 var drive_torque := 0.0
 var brake_torque := 0.0
+
+## Mass of the car resting on this corner, kg. Set by the vehicle at startup and
+## used to size the per-step force limit; see [method update_tyre].
+var supported_mass := 375.0
+
+## Inertia of the engine and gearbox reflected down to this wheel, kg m^2.
+## Set by the vehicle every tick; it changes with the gear ratio.
+var driveline_inertia := 0.0
 
 var _inertia := 1.0
 var _prev_travel := 0.0
@@ -151,6 +167,20 @@ func reset_state() -> void:
 ## Rotational inertia of the wheel (kg m^2).
 func get_inertia() -> float:
 	return _inertia
+
+
+## Inertia the wheel actually has to accelerate: its own, plus whatever the
+## driveline contributes through the current gear.
+##
+## This matters enormously. In first gear the engine's 0.24 kg m^2 is reflected
+## through a 12.9:1 ratio, which is 0.24 * 12.9^2 = 40 kg m^2 - more than thirty
+## times the wheel's own 1.2 kg m^2. Integrating the drive torque against the
+## bare wheel inertia spins it up ~18 rad/s in a single 120 Hz tick, the tyre
+## model responds with a huge opposing force, and the wheel slams the other way
+## the next tick. That is the juddering, and it is why the car could sit there
+## shaking instead of pulling away.
+func get_effective_inertia() -> float:
+	return _inertia + driveline_inertia
 
 
 ## Longitudinal speed of the contact patch in m/s.
@@ -276,7 +306,8 @@ func update_tyre(delta: float, contact_velocity: Vector3) -> void:
 	# of the carcass. This is the standard Pacejka transient model and it makes
 	# the tyre behave sensibly from 0 km/h upwards.
 	var speed := maxf(absf(v_long), 0.35)
-	var lag_gain := speed / maxf(relaxation_length, 0.01)
+	var lag_gain := maxf(speed / maxf(relaxation_length, 0.01),
+		1.0 / maxf(max_relaxation_time, 0.001))
 
 	var target_ratio := (spin * tyre_radius - v_long) / speed
 	var target_tan_alpha := -v_lat / speed
@@ -313,12 +344,22 @@ func update_tyre(delta: float, contact_velocity: Vector3) -> void:
 	var fx := total * nx / combined
 	var fy := total * ny / combined
 
-	# The tyre can never push harder than the wheel is being driven or braked,
-	# otherwise a locked wheel would generate force out of nothing.
-	var max_from_spin := absf(spin * tyre_radius - v_long) * _inertia \
-		/ maxf(tyre_radius * tyre_radius * delta, 1e-6)
-	var torque_limit := (absf(drive_torque) + absf(brake_torque)) / tyre_radius
-	var fx_limit := maxf(max_from_spin, torque_limit) + mu * spring_force * 0.05
+	# --- stability: never overshoot the slip in a single step ------------- #
+	# The contact force both slows the wheel and speeds the car up, so it
+	# closes the slip from both ends. Applying more force than it takes to
+	# bring the slip to zero this tick makes the slip reverse, the force
+	# reverses with it, and the wheel oscillates - that is the judder. This is
+	# the same reasoning as an implicit solve, expressed as a force limit.
+	var slip_velocity := spin * tyre_radius - v_long
+	var response := tyre_radius * tyre_radius / maxf(get_effective_inertia(), 1e-6) \
+		+ 1.0 / maxf(supported_mass, 1.0)
+	var no_overshoot := absf(slip_velocity) / maxf(response * delta, 1e-9)
+
+	# It also cannot push harder than it is being driven or braked, otherwise a
+	# locked wheel would make force out of nothing.
+	var torque_limit := (absf(drive_torque) + absf(brake_torque)) / tyre_radius \
+		+ mu * spring_force * 0.05
+	var fx_limit := minf(no_overshoot, torque_limit)
 	fx = clampf(fx, -fx_limit, fx_limit)
 
 	# Rolling resistance always opposes the direction of travel.
@@ -333,19 +374,22 @@ func update_tyre(delta: float, contact_velocity: Vector3) -> void:
 func update_spin(delta: float) -> void:
 	var road_torque := -tyre_force.x * tyre_radius
 	var net := drive_torque + road_torque
+	# Accelerating the wheel also means accelerating the engine and gearbox
+	# behind it, so the driveline inertia has to be in the denominator.
+	var inertia := get_effective_inertia()
 
 	if brake_torque > 0.0:
 		# Solve the brake implicitly: work out the spin the wheel would have
 		# without the brake, then remove up to that much so it can lock but
 		# never spin backwards because of braking alone.
-		var free_spin := spin + net / _inertia * delta
-		var brake_delta := brake_torque / _inertia * delta
+		var free_spin := spin + net / inertia * delta
+		var brake_delta := brake_torque / inertia * delta
 		if absf(free_spin) <= brake_delta:
 			spin = 0.0
 		else:
 			spin = free_spin - signf(free_spin) * brake_delta
 	else:
-		spin += net / _inertia * delta
+		spin += net / inertia * delta
 
 	if not grounded:
 		# Windage and bearing drag while airborne.

@@ -237,6 +237,12 @@ def check_types():
     check("every call matches its function signature", ok,
           "" if ok else r.stdout.strip().splitlines()[-1])
 
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "render_check.py")],
+                       capture_output=True, text=True)
+    ok = r.returncode == 0
+    check("rendering environment is sane", ok,
+          "" if ok else r.stdout.strip().splitlines()[-1])
+
 
 def main():
     print("Godot project validation")

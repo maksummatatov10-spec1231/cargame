@@ -26,6 +26,8 @@ signal gear_changed(gear: int)
 @export var kerb_mass := 1495.0
 ## Centre of mass offset relative to the body origin, in metres.
 @export var centre_of_mass := Vector3(0.0, 0.46, 0.06)
+## Share of the car's weight carried by the front axle (BMW 1M is 52/48).
+@export_range(0.3, 0.7) var front_weight_bias := 0.523
 
 @export_group("Engine")
 ## Peak crankshaft torque in Nm (1M: 450 Nm on overboost).
@@ -40,6 +42,10 @@ signal gear_changed(gear: int)
 @export var engine_inertia := 0.24
 ## Engine braking coefficient, Nm per rad/s.
 @export var engine_braking := 0.055
+## Extra torque multiplier while the turbo button (Shift) is held.
+@export var boost_multiplier := 1.45
+## How quickly the turbo spools up and down, in units per second.
+@export var boost_spool_rate := 2.6
 
 @export_group("Drivetrain")
 @export var gear_ratios : Array[float] = [4.11, 2.32, 1.54, 1.18, 1.00, 0.85]
@@ -51,10 +57,11 @@ signal gear_changed(gear: int)
 @export var downshift_fraction := 0.42
 ## Seconds the clutch is open during an automatic shift.
 @export var shift_time := 0.22
-## Road speed in m/s below which the clutch starts to slip, so the engine can
-## idle without dragging the car along. Without this a car left in gear would
-## creep forever on the idle torque.
-@export var clutch_engage_speed := 2.2
+## Road speed in m/s at which the clutch is fully engaged. Below this it slips,
+## so the engine can idle without dragging the car along; without it a car left
+## in gear would creep forever on idle torque. Kept low so pulling away is
+## immediate rather than mushy.
+@export var clutch_engage_speed := 0.9
 ## 0 = open diff, 1 = fully locked. A limited slip diff sits in between.
 @export_range(0.0, 1.0) var differential_lock := 0.45
 
@@ -88,6 +95,7 @@ signal gear_changed(gear: int)
 # --------------------------------------------------------------------------- #
 
 var throttle := 0.0
+var boost := 0.0                    ## 0..1, how hard the turbo button is held
 var brake_input := 0.0
 var handbrake_input := 0.0
 var steer_input := 0.0
@@ -141,6 +149,12 @@ func _ready() -> void:
 	_spawn_transform = global_transform
 	_apply_inertia_tensor()
 
+	# Each corner needs to know the share of the car it carries, so it can size
+	# its own force limits correctly.
+	for w in _wheels:
+		var share := 0.5 * (front_weight_bias if w.is_steering else 1.0 - front_weight_bias)
+		w.supported_mass = mass * share
+
 
 ## A box inertia tensor built from the real dimensions of the car keeps the
 ## rotational behaviour believable instead of relying on the auto-computed one
@@ -172,6 +186,11 @@ func _gather_input(delta: float) -> void:
 	throttle = Input.get_action_strength("drive_forward")
 	brake_input = Input.get_action_strength("drive_backward")
 	handbrake_input = Input.get_action_strength("handbrake")
+
+	# Turbo: only builds while the throttle is actually open, and spools with a
+	# short lag rather than switching on instantly, like real boost pressure.
+	var boost_target := Input.get_action_strength("turbo") * throttle
+	boost = move_toward(boost, boost_target, boost_spool_rate * delta)
 
 	var target := Input.get_action_strength("steer_left") - Input.get_action_strength("steer_right")
 	var rate := steer_rate if absf(target) > 0.01 else steer_return_rate
@@ -207,6 +226,7 @@ func reset_to_spawn() -> void:
 	gear = 1
 	_shift_timer = 0.0
 	_steer_position = 0.0
+	boost = 0.0
 	_engine_speed = idle_rpm * TAU / 60.0
 
 
@@ -334,8 +354,10 @@ func _update_drivetrain(delta: float, forward_speed: float) -> void:
 	if _shift_timer > 0.0:
 		clutch = 0.0
 	else:
+		# Engaged by road speed, and pressing the throttle bites it immediately -
+		# that is what a driver does with their left foot when pulling away.
 		var engaged := clampf(absf(forward_speed) / maxf(clutch_engage_speed, 0.01), 0.0, 1.0)
-		clutch = maxf(engaged, throttle)
+		clutch = clampf(maxf(engaged, throttle * 1.6), 0.0, 1.0)
 
 	# Reverse is selected by holding brake while basically stopped.
 	if gear > 0 and brake_input > 0.5 and forward_speed < 0.6 and throttle < 0.1:
@@ -358,6 +380,7 @@ func _update_drivetrain(delta: float, forward_speed: float) -> void:
 	else:
 		# Free revving, blended towards the wheel speed as the clutch bites.
 		var free_torque := engine_torque_at(_rpm()) * throttle \
+			* (1.0 + (boost_multiplier - 1.0) * boost) \
 			- engine_braking * maxf(_engine_speed - idle_speed, 0.0)
 		_engine_speed += free_torque / engine_inertia * delta
 		if clutch > 0.0 and absf(ratio) > 0.01:
@@ -369,6 +392,7 @@ func _update_drivetrain(delta: float, forward_speed: float) -> void:
 	_auto_shift()
 
 	var crank_torque := engine_torque_at(engine_rpm) * throttle
+	crank_torque *= 1.0 + (boost_multiplier - 1.0) * boost
 	# Engine braking only exists above idle; at idle the engine is producing just
 	# enough torque to keep itself turning, not to drag the car backwards.
 	crank_torque -= engine_braking * maxf(_engine_speed - idle_speed, 0.0) \
@@ -403,6 +427,16 @@ func _distribute_drive(axle_torque: float) -> void:
 		w.drive_torque = 0.0
 	if _rear.is_empty():
 		return
+
+	# Tell the driven wheels how much of the driveline they have to spin up with
+	# them. Without this the wheels are ~30x too light in first gear and the
+	# whole car judders instead of accelerating.
+	var ratio := current_ratio()
+	var reflected := engine_inertia * ratio * ratio * drivetrain_efficiency
+	for w in _wheels:
+		w.driveline_inertia = 0.0
+	for w in _rear:
+		w.driveline_inertia = reflected * clutch / maxf(_rear.size(), 1)
 
 	var left := _rear[0]
 	var right := _rear[1] if _rear.size() > 1 else _rear[0]

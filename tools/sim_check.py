@@ -116,10 +116,13 @@ class Wheel:
         self.load_sensitivity = 0.22
         self.nominal_load = cfg["nominal_load"]
         self.relaxation = 0.42
+        self.max_relaxation_time = 0.08
         self.rolling_resistance = 0.014
         self.camber = math.radians(cfg["camber"])
+        self.supported_mass = cfg.get("supported_mass", 375.0)
 
         self.spin = 0.0
+        self.driveline_inertia = 0.0
         self.travel = 0.0
         self.prev_travel = 0.0
         self.spring_force = 0.0
@@ -209,7 +212,8 @@ class Wheel:
         v_lat = v_dot(contact_velocity, right)
 
         speed = max(abs(v_long), 0.35)
-        blend = min(1.0, speed / self.relaxation * DT)
+        blend = min(1.0, max(speed / self.relaxation,
+                                 1.0 / self.max_relaxation_time) * DT)
         self.lag_sr += ((self.spin * self.radius - v_long) / speed - self.lag_sr) * blend
         self.lag_ta += (-v_lat / speed - self.lag_ta) * blend
         self.slip_ratio = self.lag_sr
@@ -231,10 +235,13 @@ class Wheel:
         fx = total * nx / combined
         fy = total * ny / combined
 
-        max_spin = abs(self.spin * self.radius - v_long) * self.inertia \
-            / max(self.radius ** 2 * DT, 1e-6)
-        torque_limit = (abs(self.drive_torque) + abs(self.brake_torque)) / self.radius
-        limit = max(max_spin, torque_limit) + mu * self.spring_force * 0.05
+        slip_velocity = self.spin * self.radius - v_long
+        response = self.radius ** 2 / max(self.inertia + self.driveline_inertia, 1e-6) \
+            + 1.0 / max(self.supported_mass, 1.0)
+        no_overshoot = abs(slip_velocity) / max(response * DT, 1e-9)
+        torque_limit = (abs(self.drive_torque) + abs(self.brake_torque)) / self.radius \
+            + mu * self.spring_force * 0.05
+        limit = min(no_overshoot, torque_limit)
         fx = max(-limit, min(limit, fx))
 
         if abs(v_long) > 0.05:
@@ -246,12 +253,13 @@ class Wheel:
     def update_spin(self):
         road = -self.force[0] * self.radius
         net = self.drive_torque + road
+        inertia = self.inertia + self.driveline_inertia
         if self.brake_torque > 0.0:
-            free = self.spin + net / self.inertia * DT
-            bd = self.brake_torque / self.inertia * DT
+            free = self.spin + net / inertia * DT
+            bd = self.brake_torque / inertia * DT
             self.spin = 0.0 if abs(free) <= bd else free - math.copysign(bd, free)
         else:
-            self.spin += net / self.inertia * DT
+            self.spin += net / inertia * DT
         if not self.grounded:
             self.spin -= self.spin * min(1.0, 1.2 * DT)
         self.spin = max(-400.0, min(400.0, self.spin))
@@ -370,6 +378,7 @@ class Car:
                 "peak_sa_deg": 8.0 if front else 8.8,
                 "nominal_load": corner_mass * G,
                 "camber": -1.4 if front else -1.9,
+                "supported_mass": corner_mass,
             }
             mount = (p[0] - self.com[0],
                      p[1] + SPRING_TRAVEL - RIDE_DROP - self.com[1],
@@ -428,7 +437,7 @@ class Car:
         if self.shift_timer > 0.0:
             clutch = 0.0
         else:
-            clutch = max(min(abs(fwd) / 2.2, 1.0), self.throttle)
+            clutch = min(1.0, max(min(abs(fwd) / 0.9, 1.0), self.throttle * 1.6))
         rear = [w for w in self.wheels if not w.is_steering]
         driven_spin = sum(w.spin for w in rear) / len(rear)
         ratio = self.ratio()
@@ -460,6 +469,10 @@ class Car:
 
         for w in self.wheels:
             w.drive_torque = 0.0
+            w.driveline_inertia = 0.0
+        reflected = 0.24 * self.ratio() ** 2 * 0.90
+        for w in rear:
+            w.driveline_inertia = reflected * clutch / len(rear)
         half = axle * 0.5
         bias = max(-1.0, min(1.0, (rear[0].spin - rear[1].spin) * 0.06)) * 0.45 * abs(half)
         rear[0].drive_torque = half - bias
@@ -626,6 +639,74 @@ def test_braking():
     check("average deceleration 0.8-1.5 g", 0.8 < decel < 1.5, "%.2f g" % decel)
 
 
+def test_smoothness():
+    """Guards against the wheel-spin judder that made the car shake in place.
+
+    The cause was the driveline inertia being left out of the wheel's spin
+    integration. In first gear the engine reflects ~40 kg m^2 down to the
+    wheels against their own 1.2 kg m^2, so without it a tick of drive torque
+    span the wheel up ~18 rad/s, the tyre fought back, and the wheel reversed
+    the next tick - the car juddered instead of pulling away.
+    """
+    print("\n== smoothness: pulling away must not judder ==")
+    car = Car(REST_HEIGHT)
+    for _ in range(360):
+        car.step()
+
+    car.throttle = 1.0
+    flips = 0
+    max_slip = 0.0
+    jerks = []
+    prev_spin = None
+    prev_accel = 0.0
+    prev_speed = car.forward_speed()
+
+    for _ in range(120 * 5):
+        car.step()
+        w = next(x for x in car.wheels if x.name == "lr")
+        if prev_spin is not None and abs(w.spin) > 1.0 and abs(prev_spin) > 1.0:
+            if (w.spin > 0.0) != (prev_spin > 0.0):
+                flips += 1
+        prev_spin = w.spin
+        max_slip = max(max_slip, abs(w.slip_ratio))
+
+        speed = car.forward_speed()
+        accel = (speed - prev_speed) / DT
+        prev_speed = speed
+        jerks.append(abs(accel - prev_accel) / DT)
+        prev_accel = accel
+
+    # Judder is *sustained* jerk. Single spikes when the clutch bites or a gear
+    # engages are real events a car actually makes, so the test counts how many
+    # ticks are violent rather than looking at the worst one.
+    violent = sum(1 for j in jerks if j > 150.0)
+    print("  spin reversals %d, peak slip %.2f, violent ticks %d/%d, %.0f km/h"
+          % (flips, max_slip, violent, len(jerks), car.speed_kmh()))
+    check("driven wheels never reverse under power", flips == 0, "%d reversals" % flips)
+    check("wheelspin stays realistic", max_slip < 1.0, "%.2f" % max_slip)
+    check("no sustained judder", violent <= 12,
+          "%d violent ticks of %d" % (violent, len(jerks)))
+    check("car actually pulls away", car.speed_kmh() > 60.0, "%.0f km/h" % car.speed_kmh())
+
+    # crawling in gear at part throttle must also be steady
+    car2 = Car(REST_HEIGHT)
+    for _ in range(360):
+        car2.step()
+    car2.throttle = 0.12
+    speeds = []
+    for _ in range(120 * 4):
+        car2.step()
+        speeds.append(car2.forward_speed())
+    tail = speeds[-240:]
+    wobble = max(tail) - min(tail)
+    monotonic = all(tail[i + 1] >= tail[i] - 0.05 for i in range(len(tail) - 1))
+    print("  gentle throttle: %.2f -> %.2f m/s, wobble %.3f m/s"
+          % (speeds[0], speeds[-1], wobble))
+    check("creeping at light throttle is steady", monotonic, "speed oscillates")
+    check("light throttle still moves the car", speeds[-1] > 0.8,
+          "%.2f m/s" % speeds[-1])
+
+
 def test_cornering():
     print("\n== steady state cornering ==")
     car = Car(REST_HEIGHT)
@@ -673,6 +754,7 @@ def main():
     print("Vehicle physics verification (120 Hz, mirrors the GDScript exactly)")
     test_drop()
     test_stability()
+    test_smoothness()
     test_acceleration()
     test_braking()
     test_cornering()

@@ -18,7 +18,8 @@ var _show_debug := false
 func _ready() -> void:
 	_vehicle = get_node_or_null(vehicle_path) as Vehicle
 	_debug.visible = false
-	_hint.text = "W / S  throttle & brake      A / D  steer      Space  handbrake" \
+	_hint.text = "W / S  throttle & brake      A / D  steer      Shift  TURBO" \
+		+ "      Space  handbrake" \
 		+ "\nC  camera      R  respawn      ~  telemetry"
 
 
@@ -30,6 +31,12 @@ func _process(_delta: float) -> void:
 		return
 
 	_speed.text = "%3d km/h" % roundi(_vehicle.speed_kmh)
+	# The gear readout turns orange while the turbo is spooled up.
+	if _vehicle.boost > 0.05:
+		_gear.modulate = Color(1.0, 0.62, 0.25).lerp(
+			Color(1.0, 0.35, 0.1), _vehicle.boost)
+	else:
+		_gear.modulate = Color.WHITE
 	_rpm.value = clampf(_vehicle.engine_rpm / _vehicle.redline_rpm * 100.0, 0.0, 100.0)
 	var g := _vehicle.gear
 	_gear.text = "R" if g < 0 else ("N" if g == 0 else str(g))
@@ -40,6 +47,7 @@ func _process(_delta: float) -> void:
 
 func _build_telemetry() -> String:
 	var lines := PackedStringArray()
+	lines.append("boost %.2f" % _vehicle.boost)
 	lines.append("rpm %5.0f   gear %s   clutch %.2f" % [
 		_vehicle.engine_rpm,
 		("R" if _vehicle.gear < 0 else str(_vehicle.gear)),
