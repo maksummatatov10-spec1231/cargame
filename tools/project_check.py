@@ -227,6 +227,17 @@ def check_common_mistakes():
     check("vehicle null-checks the model before driving it", "if _model:" in veh)
 
 
+def check_types():
+    """Runs the call-signature type checker as part of the project gate."""
+    print("\n== call signatures ==")
+    import subprocess
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "typecheck.py")],
+                       capture_output=True, text=True)
+    ok = r.returncode == 0
+    check("every call matches its function signature", ok,
+          "" if ok else r.stdout.strip().splitlines()[-1])
+
+
 def main():
     print("Godot project validation")
     check_scenes()
@@ -234,6 +245,7 @@ def main():
     check_project()
     check_scripts()
     check_common_mistakes()
+    check_types()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES else "FAILURES: " + ", ".join(FAILURES)))
     return 1 if FAILURES else 0
 

@@ -77,18 +77,22 @@ func _build_props() -> void:
 	props.name = "Props"
 	add_child(props)
 
-	# A low ramp to launch off.
-	_add_box(props, Vector3(0.0, 0.0, -34.0), Vector3(7.0, 1.6, 9.0),
-		Color(0.55, 0.5, 0.45), deg_to_rad(-10.0))
-	# A pair of speed bumps.
+	# A ramp to launch off. It is pitched about X, so one end is buried in the
+	# ground and the other rises: that is what makes it drivable rather than a
+	# step. Raised by half its height so the leading edge meets the ground.
+	_add_box(props, Vector3(0.0, 0.55, -34.0), Vector3(8.0, 1.2, 11.0),
+		Color(0.55, 0.5, 0.45), Vector3(deg_to_rad(-11.0), 0.0, 0.0))
+
+	# Speed bumps, to watch the suspension work at low speed.
 	for i in 3:
-		_add_box(props, Vector3(-16.0, 0.06, 8.0 + i * 7.0), Vector3(9.0, 0.14, 0.55),
-			Color(0.72, 0.66, 0.3), 0.0)
-	# Kerb blocks to bump into.
+		_add_box(props, Vector3(-16.0, 0.05, 8.0 + i * 7.0), Vector3(9.0, 0.1, 0.6),
+			Color(0.72, 0.66, 0.3), Vector3.ZERO)
+
+	# Kerb blocks to bump into, yawed so they are not all axis aligned.
 	for i in 6:
 		var a := TAU * i / 6.0
 		_add_box(props, Vector3(cos(a) * 26.0, 0.4, sin(a) * 26.0 + 20.0),
-			Vector3(2.4, 0.8, 2.4), Color(0.5, 0.52, 0.55), a)
+			Vector3(2.4, 0.8, 2.4), Color(0.5, 0.52, 0.55), Vector3(0.0, a, 0.0))
 
 
 func _add_box(parent: Node3D, pos: Vector3, size: Vector3, colour: Color,

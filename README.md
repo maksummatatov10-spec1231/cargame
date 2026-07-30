@@ -206,14 +206,24 @@ Those numbers are all in the right ballpark for a real BMW 1M (4.9 s claimed
 | `tools/sim_check.py` | drop, settling, static loads, weight distribution, acceleration, braking, cornering, 30 s parked stability |
 | `tools/anim_check.py` | wheel roll matches ground speed, Ackermann, speed sensitive lock, airborne coasting, pivot geometry |
 | `tools/camera_check.py` | camera never clips inside the car, view direction never degenerate, rig wiring |
+| `tools/typecheck.py` | argument types and arity of every call to a project function |
 | `tools/project_check.py` | scene resource integrity, glTF validity, input map, node paths |
 
-Run all four:
+Run all five:
 
 ```bash
-python3 tools/sim_check.py && python3 tools/anim_check.py \
-  && python3 tools/camera_check.py && python3 tools/project_check.py
+python3 tools/typecheck.py && python3 tools/sim_check.py \
+  && python3 tools/anim_check.py && python3 tools/camera_check.py \
+  && python3 tools/project_check.py
 ```
+
+`typecheck.py` is worth singling out. `gdparse` only checks syntax and `gdlint`
+only checks style, so when `_add_box()` gained a `Vector3` rotation parameter
+but one edit failed to update its three call sites, both tools still reported
+success and the error only appeared when Godot refused to load the project
+(`Cannot pass a value of type "float" as "Vector3"`). The type checker resolves
+literals, constructors, numeric built-ins and locally declared variables, and
+catches all three of those call sites.
 
 ---
 
