@@ -300,6 +300,130 @@ def check_unguarded_indexing(sources):
                                starts[fi] + offset + 1, name, idx))
 
 
+def check_local_shadows_member(sources):
+    """Locals/parameters that shadow a variable declared at class level.
+
+    Godot reports these as SHADOWED_VARIABLE, e.g. terrain.gd had a local
+    `var size := 256` inside _make_detail_texture() while `@export var size`
+    already existed on the class.
+    """
+    for path, text in sources.items():
+        lines = text.splitlines()
+        members = {}
+        for i, raw in enumerate(lines, 1):
+            line = raw.split("#")[0]
+            if line.startswith("\t") or line.startswith(" "):
+                continue          # indented: not class level
+            m = re.match(r"(?:@export[^\s]*\s+)?(?:static\s+)?var\s+(\w+)", line)
+            if m:
+                members[m.group(1)] = i
+
+        for i, raw in enumerate(lines, 1):
+            line = raw.split("#")[0]
+            if not (line.startswith("\t") or line.startswith(" ")):
+                continue
+            m = re.match(r"\s*var\s+(\w+)\s*[:=]", line)
+            if m and m.group(1) in members:
+                PROBLEMS.append(
+                    "%s:%d: local variable \"%s\" shadows the class variable "
+                    "declared at line %d"
+                    % (os.path.basename(path), i, m.group(1),
+                       members[m.group(1)]))
+            fm = re.match(r"\s*(?:static\s+)?func\s+\w+\s*\((.*)", line)
+            if fm:
+                for prm in split_args(fm.group(1).split(")")[0]):
+                    nm = prm.split(":")[0].split("=")[0].strip()
+                    if nm and nm in members:
+                        PROBLEMS.append(
+                            "%s:%d: parameter \"%s\" shadows the class variable "
+                            "declared at line %d"
+                            % (os.path.basename(path), i, nm, members[nm]))
+
+
+def _typed_containers(text):
+    """{name: element type} for things whose elements Godot knows the type of.
+
+    Covers class variables and parameters declared `Array[T]`, and functions
+    declared `-> Array[T]`, which is how `for w in _front:` ends up giving a
+    properly typed `w`.
+    """
+    out = {}
+    for m in re.finditer(r"\bvar\s+(\w+)\s*:\s*Array\[(\w+)\]", text):
+        out[m.group(1)] = m.group(2)
+    for m in re.finditer(r"\b(\w+)\s*:\s*Array\[(\w+)\]", text):
+        out.setdefault(m.group(1), m.group(2))
+    for m in re.finditer(r"\bvar\s+(\w+)\s*:\s*(Packed\w+Array)", text):
+        out[m.group(1)] = m.group(2)
+    for m in re.finditer(r"func\s+(\w+)\s*\([^)]*\)\s*->\s*Array\[(\w+)\]",
+                         text):
+        out[m.group(1) + "()"] = m.group(2)
+    for m in re.finditer(r"func\s+(\w+)\s*\([^)]*\)\s*->\s*(Packed\w+Array)",
+                         text):
+        out[m.group(1) + "()"] = m.group(2)
+    return out
+
+
+def check_inferable(sources):
+    """Flags `var x := <Variant>.member`, which Godot rejects.
+
+    "Cannot infer the type of \"x\" variable because the value doesn't have a
+    set type." happens when the right-hand side comes from something the
+    compiler only knows as Variant - typically an element of an *untyped*
+    Array, e.g. `var _vehicles: Array = []` followed by
+    `for vehicle in _vehicles: for wheel in vehicle.get_wheels():`.
+    A typed `Array[RayWheel]` does not have this problem, so those are
+    deliberately not flagged.
+    """
+    everything = "\n".join(sources.values())
+    for path, text in sources.items():
+        typed = _typed_containers(text)
+        typed_global = _typed_containers(everything)
+        lines = text.splitlines()
+        starts = [i for i, l in enumerate(lines)
+                  if re.match(r"\s*(?:static\s+)?func\s+\w+", l)]
+        starts.append(len(lines))
+        for fi in range(len(starts) - 1):
+            body = lines[starts[fi]:starts[fi + 1]]
+            variant = set()
+            for raw in body:
+                line = raw.split("#")[0]
+                m = re.match(r"\s*for\s+(\w+)\s+in\s+(.+?):\s*$", line)
+                if not m:
+                    continue
+                src = m.group(2).strip()
+                if re.match(r"^(-?\d+|range\(|[\w.]+\.size\(\))", src):
+                    continue                       # integer loops
+                if re.match(r"^[A-Z_][A-Z0-9_]*$", src):
+                    continue                       # a constant count
+                # `x.method()` on a Variant receiver: also Variant
+                recv = re.match(r"^(\w+)\.", src)
+                if recv and recv.group(1) in variant:
+                    variant.add(m.group(1))
+                    continue
+                call = re.search(r"(\w+)\(\)\s*$", src)
+                if call and (call.group(1) + "()") in typed_global:
+                    continue                       # typed return value
+                key = src.split(".")[-1] if "." not in src else src
+                if src in typed or key in typed:
+                    continue                       # typed Array[T]
+                if src.endswith("get_children()") or src in typed_global:
+                    variant.add(m.group(1))
+                    continue
+                variant.add(m.group(1))
+            for offset, raw in enumerate(body):
+                line = raw.split("#")[0]
+                m = re.match(r"\s*var\s+(\w+)\s*:=\s*(.+)$", line)
+                if not m:
+                    continue
+                base = re.match(r"^(\w+)(?:\.|\[)", m.group(2).strip())
+                if base and base.group(1) in variant:
+                    PROBLEMS.append(
+                        "%s:%d: cannot infer the type of \"%s\": \"%s\" is a "
+                        "Variant, write an explicit type"
+                        % (os.path.basename(path), starts[fi] + offset + 1,
+                           m.group(1), base.group(1)))
+
+
 def check_shadowing(sources):
     """Finds locals and parameters that shadow a base class member or a global."""
     for path, text in sources.items():
@@ -436,6 +560,8 @@ def main():
     print("  %d scripts, %d typed functions" % (len(sources), total))
     check_calls(sources, sigs)
     check_shadowing(sources)
+    check_local_shadows_member(sources)
+    check_inferable(sources)
     check_unguarded_indexing(sources)
     check_node_paths(sources)
 

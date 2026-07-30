@@ -39,7 +39,7 @@ var _points: PackedVector4Array = PackedVector4Array()
 var _ages: PackedFloat32Array = PackedFloat32Array()
 
 var _materials: Array[ShaderMaterial] = []
-var _vehicles: Array = []
+var _vehicles: Array[Vehicle] = []
 
 
 func _ready() -> void:
@@ -73,7 +73,7 @@ func _physics_process(delta: float) -> void:
 				break
 			if not wheel.grounded:
 				continue
-			var p := wheel.contact_point
+			var p: Vector3 = wheel.contact_point
 			_points[slot] = Vector4(p.x, p.y, p.z, 1.0)
 			_ages[slot] = 0.0
 			slot += 1
@@ -81,7 +81,7 @@ func _physics_process(delta: float) -> void:
 	# Fade the rest so plants recover behind the car.
 	for i in range(slot, MAX_POINTS):
 		var strength := 1.0 - clampf(_ages[i] / maxf(recovery_time, 0.01), 0.0, 1.0)
-		var p := _points[i]
+		var p: Vector4 = _points[i]
 		_points[i] = Vector4(p.x, p.y, p.z, strength)
 
 	for mat in _materials:

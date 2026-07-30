@@ -431,11 +431,11 @@ func _surface_colour(x: int, z: int) -> Color:
 ## blue carry a tangent-space normal derived from it. Generating this once at
 ## startup replaces ~96 sin() calls per pixel per frame with one texture fetch.
 func _make_detail_texture() -> ImageTexture:
-	var size := 256
+	var tex_size := 256
 	var height := PackedFloat32Array()
-	height.resize(size * size)
-	for y in size:
-		for x in size:
+	height.resize(tex_size * tex_size)
+	for y in tex_size:
+		for x in tex_size:
 			# Several octaves, summed once here instead of per pixel.
 			var v := 0.0
 			var amp := 0.5
@@ -445,16 +445,16 @@ func _make_detail_texture() -> ImageTexture:
 					float(y * freq) / 32.0, octave * 31)
 				amp *= 0.5
 				freq *= 2
-			height[y * size + x] = v
+			height[y * tex_size + x] = v
 
-	var img := Image.create(size, size, true, Image.FORMAT_RGB8)
-	for y in size:
-		for x in size:
-			var h := height[y * size + x]
-			var l := height[y * size + (x - 1 + size) % size]
-			var r := height[y * size + (x + 1) % size]
-			var d := height[((y - 1 + size) % size) * size + x]
-			var u := height[((y + 1) % size) * size + x]
+	var img := Image.create(tex_size, tex_size, true, Image.FORMAT_RGB8)
+	for y in tex_size:
+		for x in tex_size:
+			var h := height[y * tex_size + x]
+			var l := height[y * tex_size + (x - 1 + tex_size) % tex_size]
+			var r := height[y * tex_size + (x + 1) % tex_size]
+			var d := height[((y - 1 + tex_size) % tex_size) * tex_size + x]
+			var u := height[((y + 1) % tex_size) * tex_size + x]
 			var nx := clampf((l - r) * 4.0, -1.0, 1.0)
 			var ny := clampf((d - u) * 4.0, -1.0, 1.0)
 			img.set_pixel(x, y, Color(h, nx * 0.5 + 0.5, ny * 0.5 + 0.5))
