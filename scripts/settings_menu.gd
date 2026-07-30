@@ -146,6 +146,59 @@ func _build() -> void:
 	glow_box.toggled.connect(func(on: bool) -> void: GameSettings.set_glow(on))
 	body.add_child(MenuTheme.make_row("Свечение", glow_box, ""))
 
+	# --- engine power ------------------------------------------------------ #
+	var power := HSlider.new()
+	power.min_value = 0.25
+	power.max_value = 3.0
+	power.step = 0.05
+	power.value = GameSettings.engine_power
+	power.custom_minimum_size = Vector2(300.0, 28.0)
+	var power_value := Label.new()
+	power_value.label_settings = MenuTheme.label_settings(17, MenuTheme.ACCENT)
+	power_value.text = _power_text(GameSettings.engine_power)
+	power.value_changed.connect(func(v: float) -> void:
+		power_value.text = _power_text(v)
+		GameSettings.set_engine_power(v))
+	var power_row := HBoxContainer.new()
+	power_row.add_theme_constant_override("separation", 12)
+	power_row.add_child(power)
+	power_row.add_child(power_value)
+	body.add_child(MenuTheme.make_row("Мощность двигателя", power_row,
+		"Множитель к заводскому моменту. 100% — настоящая машина. "
+		+ "Противобуксовочная система считает предел по сцеплению шин, а не "
+		+ "по мотору, поэтому выше 150% машина не столько едет быстрее, "
+		+ "сколько становится злее."))
+
+	# --- all wheel drive --------------------------------------------------- #
+	var awd := CheckBox.new()
+	awd.text = "Полный привод"
+	awd.button_pressed = GameSettings.force_awd
+	awd.add_theme_font_size_override("font_size", 17)
+	awd.toggled.connect(func(on: bool) -> void: GameSettings.set_force_awd(on))
+	body.add_child(MenuTheme.make_row("Привод", awd,
+		"BMW 1M заднеприводная; галочка делает её полноприводной. Defender и "
+		+ "GHammer полноприводные всегда — их выключить нельзя."))
+
+	var split := HSlider.new()
+	split.min_value = 0.0
+	split.max_value = 1.0
+	split.step = 0.05
+	split.value = GameSettings.front_split
+	split.custom_minimum_size = Vector2(300.0, 28.0)
+	var split_value := Label.new()
+	split_value.label_settings = MenuTheme.label_settings(17, MenuTheme.ACCENT)
+	split_value.text = _split_text(GameSettings.front_split)
+	split.value_changed.connect(func(v: float) -> void:
+		split_value.text = _split_text(v)
+		GameSettings.set_front_split(v))
+	var split_row := HBoxContainer.new()
+	split_row.add_theme_constant_override("separation", 12)
+	split_row.add_child(split)
+	split_row.add_child(split_value)
+	body.add_child(MenuTheme.make_row("Развесовка привода", split_row,
+		"Сколько момента уходит на перед. 40% — задний уклон, машина живее в "
+		+ "поворотах; 50% — нейтрально."))
+
 	# --- frame rate limit ------------------------------------------------ #
 	_fps_value = Label.new()
 	_fps_value.label_settings = MenuTheme.label_settings(19, MenuTheme.ACCENT)
@@ -235,6 +288,14 @@ func _build() -> void:
 	back_wrap.add_child(back)
 	page.add_child(back_wrap)
 	back.grab_focus()
+
+
+func _power_text(value: float) -> String:
+	return "%d%%" % roundi(value * 100.0)
+
+
+func _split_text(value: float) -> String:
+	return "%d / %d" % [roundi(value * 100.0), roundi((1.0 - value) * 100.0)]
 
 
 func _step_preset(direction: int) -> void:

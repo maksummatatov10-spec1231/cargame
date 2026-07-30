@@ -185,6 +185,13 @@ var _engine_speed := 0.0            ## rad/s
 var _spawn_transform := Transform3D.IDENTITY
 var _wheelbase := 2.63
 var _track := 1.49
+var _base_peak_torque := 450.0
+var _base_all_wheel_drive := false
+var _base_front_split := 0.4
+var _tuning_captured := false
+var _pending_power := 1.0
+var _pending_awd := false
+var _pending_split := 0.4
 
 var _terrain : Terrain
 
@@ -229,6 +236,14 @@ func _ready() -> void:
 	_spawn_transform = global_transform
 	_apply_inertia_tensor()
 
+	# Remember what the vehicle was designed with, so the settings menu scales
+	# from the real figures rather than compounding on its own last value.
+	_base_peak_torque = peak_torque
+	_base_all_wheel_drive = all_wheel_drive
+	_base_front_split = front_torque_split
+	_tuning_captured = true
+	_apply_pending_tuning()
+
 	# The terrain is a sibling in the main scene; found once rather than
 	# searched for every tick.
 	var found := get_tree().get_nodes_in_group("terrain")
@@ -240,6 +255,38 @@ func _ready() -> void:
 	for w in _wheels:
 		var share := 0.5 * (front_weight_bias if w.is_steering else 1.0 - front_weight_bias)
 		w.supported_mass = mass * share
+
+
+## Applies the player's tuning from the settings menu.
+##
+## Scaling is always from the vehicle's designed figures, never from whatever
+## the values happen to be now - otherwise moving the slider twice would
+## multiply twice. Safe to call before _ready(); the values are stored and
+## applied once the originals have been captured.
+func apply_tuning(power: float, awd: bool, front_split: float) -> void:
+	_pending_power = maxf(power, 0.05)
+	_pending_awd = awd
+	_pending_split = clampf(front_split, 0.0, 1.0)
+	if _tuning_captured:
+		_apply_pending_tuning()
+
+
+func _apply_pending_tuning() -> void:
+	peak_torque = _base_peak_torque * _pending_power
+
+	# Four wheel drive can be forced on, but never off for a vehicle that is
+	# built as 4WD - the Defender and the pickup have no rear-drive gearbox
+	# and turning it off would just make them worse for no reason.
+	all_wheel_drive = _base_all_wheel_drive or _pending_awd
+	if all_wheel_drive:
+		front_torque_split = _pending_split if not _base_all_wheel_drive \
+			else _base_front_split
+
+	# The wheels have to agree, because _driven() and the traction control
+	# both read is_driven, and the differential splits per axle.
+	ensure_wheels()
+	for w in _wheels:
+		w.is_driven = all_wheel_drive or not w.is_steering
 
 
 ## A box inertia tensor built from the real dimensions of the car keeps the

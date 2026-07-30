@@ -61,6 +61,16 @@ var shadow_size := 4096
 ## much GEOMETRY enters the shadow passes, which costs far more than the map
 ## resolution does.
 var shadow_distance := 190.0
+## Engine power, as a multiplier on the vehicle's designed peak torque.
+## 1.0 is the real car. The traction control sizes itself from the tyres'
+## grip, not from the engine, so raising this makes the car harder to drive
+## rather than simply faster.
+var engine_power := 1.0
+## Drive all four wheels, whatever the vehicle was designed with. The BMW is
+## rear-wheel drive as standard; the Defender and the pickup are already 4WD.
+var force_awd := false
+## Share of torque sent to the front axle when four wheel drive is on.
+var front_split := 0.4
 ## Screen resolution scale. Below 1.0 the 3D scene renders smaller and is
 ## upscaled; the UI stays sharp. The single most effective control there is
 ## when the GPU is fill-rate bound.
@@ -112,6 +122,9 @@ func _apply_to_scene() -> void:
 		var light := node as DirectionalLight3D
 		if light != null and light.shadow_enabled:
 			light.directional_shadow_max_distance = shadow_distance
+		var vehicle := node as Vehicle
+		if vehicle != null:
+			vehicle.apply_tuning(engine_power, force_awd, front_split)
 
 
 func _find_all(node: Node) -> Array[Node]:
@@ -191,6 +204,24 @@ func preset_label(value: int) -> String:
 			return "Высокие"
 
 
+func set_engine_power(value: float) -> void:
+	engine_power = clampf(value, 0.25, 3.0)
+	apply()
+	save_settings()
+
+
+func set_force_awd(value: bool) -> void:
+	force_awd = value
+	apply()
+	save_settings()
+
+
+func set_front_split(value: float) -> void:
+	front_split = clampf(value, 0.0, 1.0)
+	apply()
+	save_settings()
+
+
 func set_render_scale(value: float) -> void:
 	render_scale = clampf(value, 0.5, 1.0)
 	apply()
@@ -251,6 +282,9 @@ func save_settings() -> void:
 	cfg.set_value("video", "shadow_size", shadow_size)
 	cfg.set_value("video", "shadow_distance", shadow_distance)
 	cfg.set_value("video", "render_scale", render_scale)
+	cfg.set_value("car", "engine_power", engine_power)
+	cfg.set_value("car", "force_awd", force_awd)
+	cfg.set_value("car", "front_split", front_split)
 	cfg.set_value("world", "vegetation_density", vegetation_density)
 	cfg.save(SAVE_PATH)
 
@@ -268,5 +302,8 @@ func load_settings() -> void:
 	shadow_size = int(cfg.get_value("video", "shadow_size", shadow_size))
 	shadow_distance = float(cfg.get_value("video", "shadow_distance", shadow_distance))
 	render_scale = float(cfg.get_value("video", "render_scale", render_scale))
+	engine_power = float(cfg.get_value("car", "engine_power", engine_power))
+	force_awd = bool(cfg.get_value("car", "force_awd", force_awd))
+	front_split = float(cfg.get_value("car", "front_split", front_split))
 	vegetation_density = float(
 		cfg.get_value("world", "vegetation_density", vegetation_density))

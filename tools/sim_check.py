@@ -341,17 +341,19 @@ PEAK_TQ_RPM, PEAK_PW_RPM = 3000.0, 5900.0
 IDLE, REDLINE = 850.0, 7000.0
 
 
-def engine_torque(rpm):
+def engine_torque(rpm, scale=1.0):
+    """Crank torque. `scale` mirrors GameSettings.engine_power, which the
+    vehicle applies as peak_torque = _base_peak_torque * power."""
     if rpm < IDLE * 0.4:
         return 0.0
     if rpm < PEAK_TQ_RPM:
         x = max(0.0, min(1.0, (rpm - IDLE * 0.5) / (PEAK_TQ_RPM - IDLE * 0.5)))
-        t = PEAK_TORQUE * (0.42 + 0.58 * math.sin(x * math.pi * 0.5))
+        t = PEAK_TORQUE * scale * (0.42 + 0.58 * math.sin(x * math.pi * 0.5))
     elif rpm < PEAK_PW_RPM:
-        t = PEAK_TORQUE
+        t = PEAK_TORQUE * scale
     else:
         x = max(0.0, min(1.0, (rpm - PEAK_PW_RPM) / (REDLINE - PEAK_PW_RPM)))
-        t = PEAK_TORQUE * (1.0 - 0.34 * x)
+        t = PEAK_TORQUE * scale * (1.0 - 0.34 * x)
     if rpm > REDLINE:
         t *= max(0.0, 1.0 - (rpm - REDLINE) / 260.0)
     return t
@@ -399,6 +401,10 @@ class Car:
         self.steer_input = 0.0
         self.shift_timer = 0.0
         self.tc_cut = 0.0
+        # Tuning exposed by the settings menu.
+        self.engine_power = 1.0
+        self.all_wheel_drive = False
+        self.front_torque_split = 0.4
         self.traction_control = 0.85
         self.traction_target_slip = 0.16
         self.stability_control = 0.6
@@ -459,13 +465,16 @@ class Car:
         else:
             clutch = min(1.0, max(min(abs(fwd) / 0.9, 1.0), self.throttle * 1.6))
         rear = [w for w in self.wheels if not w.is_steering]
-        driven_spin = sum(w.spin for w in rear) / len(rear)
+        front = [w for w in self.wheels if w.is_steering]
+        # Mirrors Vehicle._driven(): all four wheels when 4WD is on.
+        driven = self.wheels if self.all_wheel_drive else rear
+        driven_spin = sum(w.spin for w in driven) / len(driven)
         ratio = self.ratio()
         idle_speed = IDLE * math.tau / 60.0
         if abs(ratio) > 0.01 and clutch > 0.99:
             self.engine_speed = abs(driven_spin * ratio)
         else:
-            free = engine_torque(self._rpm()) * self.throttle \
+            free = engine_torque(self._rpm(), self.engine_power) * self.throttle \
                 - 0.055 * max(0.0, self.engine_speed - idle_speed)
             self.engine_speed += free / 0.24 * DT
             if clutch > 0.0 and abs(ratio) > 0.01:
@@ -485,7 +494,7 @@ class Car:
                 self.shift_timer = 0.22 * 0.6
 
         # traction control: reactive + predictive
-        worst = max([w.slip_ratio for w in rear if w.grounded] or [0.0])
+        worst = max([w.slip_ratio for w in driven if w.grounded] or [0.0])
         if worst <= self.traction_target_slip:
             self.tc_cut = max(0.0, self.tc_cut - 4.0 * DT)
         else:
@@ -495,29 +504,29 @@ class Car:
 
         if abs(ratio) > 0.01:
             weakest = None
-            driven = 0
+            driven_count = 0
             lateral_use = 0.0
-            for w in rear:
+            for w in driven:
                 if w.grounded:
                     lr = w.spring_force / max(w.nominal_load, 1.0)
                     mu = w.mu * (1.0 - w.load_sensitivity * (lr - 1.0))
                     mu = max(0.35 * w.mu, min(1.35 * w.mu, mu))
                     f = mu * w.spring_force * w.surface_grip
                     weakest = f if weakest is None else min(weakest, f)
-                    driven += 1
+                    driven_count += 1
                     lateral_use = max(lateral_use, abs(w.slip_angle) / w.peak_sa)
-            if driven and weakest:
-                capacity = weakest * driven * (1.0 + 0.35 * 0.45)
+            if driven_count and weakest:
+                capacity = weakest * driven_count * (1.0 + 0.35 * 0.45)
                 remaining = math.sqrt(max(0.0, 1.0 - min(lateral_use, 1.0) ** 2))
                 capacity *= 1.0 + (max(remaining, 0.25) - 1.0) * self.traction_control
-                allowed = capacity * self.traction_headroom * rear[0].radius \
+                allowed = capacity * self.traction_headroom * driven[0].radius \
                     / (abs(ratio) * 0.90)
-                demand = engine_torque(rpm)
+                demand = engine_torque(rpm, self.engine_power)
                 if demand > allowed:
                     tc = min(tc, 1.0 + (allowed / demand - 1.0) * self.traction_control)
         tc = max(0.0, min(1.0, tc))
 
-        crank = engine_torque(rpm) * self.throttle * tc
+        crank = engine_torque(rpm, self.engine_power) * self.throttle * tc
         crank -= 0.055 * max(0.0, self.engine_speed - idle_speed) \
             * (1.0 - self.throttle * 0.85)
         axle = crank * self.ratio() * 0.90 * clutch
@@ -526,12 +535,22 @@ class Car:
             w.drive_torque = 0.0
             w.driveline_inertia = 0.0
         reflected = 0.24 * self.ratio() ** 2 * 0.90
-        for w in rear:
-            w.driveline_inertia = reflected * clutch / len(rear)
-        half = axle * 0.5
-        bias = max(-1.0, min(1.0, (rear[0].spin - rear[1].spin) * 0.06)) * 0.45 * abs(half)
-        rear[0].drive_torque = half - bias
-        rear[1].drive_torque = half + bias
+        for w in driven:
+            w.driveline_inertia = reflected * clutch / len(driven)
+
+        def split_axle(axle, axle_torque):
+            """Mirrors Vehicle._split_axle()."""
+            half = axle_torque * 0.5
+            bias = max(-1.0, min(1.0, (axle[0].spin - axle[1].spin) * 0.06)) \
+                * 0.45 * abs(half)
+            axle[0].drive_torque = half - bias
+            axle[1].drive_torque = half + bias
+
+        if self.all_wheel_drive and len(front) == 2:
+            split_axle(front, axle * self.front_torque_split)
+            split_axle(rear, axle * (1.0 - self.front_torque_split))
+        else:
+            split_axle(rear, axle)
 
         for w in self.wheels:
             base = 2400.0 if w.is_steering else 1500.0
@@ -1076,6 +1095,10 @@ def build_pickup(height):
     car.steer_input = 0.0
     car.shift_timer = 0.0
     car.tc_cut = 0.0
+    # Both heavy vehicles are built as permanent 4WD (build_car_scene.py).
+    car.engine_power = 1.0
+    car.all_wheel_drive = True
+    car.front_torque_split = 0.4
     car.traction_control = 0.85
     car.traction_target_slip = 0.16
     car.stability_control = 0.6
@@ -1179,6 +1202,10 @@ def build_from(spec, height):
     car.steer_input = 0.0
     car.shift_timer = 0.0
     car.tc_cut = 0.0
+    # Both heavy vehicles are built as permanent 4WD (build_car_scene.py).
+    car.engine_power = 1.0
+    car.all_wheel_drive = True
+    car.front_torque_split = 0.4
     car.traction_control = 0.9
     car.traction_target_slip = 0.16
     car.stability_control = 0.75
@@ -1639,6 +1666,120 @@ def test_normal_blend_is_safe():
           "the dangerous call is back")
 
 
+def test_engine_power_setting():
+    """The engine power slider must actually change the car."""
+    print("\n== engine power setting ==")
+
+    def launch(power, awd=False):
+        car = Car(REST_HEIGHT)
+        car.engine_power = power
+        car.all_wheel_drive = awd
+        for _ in range(360):
+            car.step()
+        car.throttle = 1.0
+        t = 0.0
+        hit = None
+        worst = 0.0
+        for _ in range(120 * 18):
+            car.step()
+            t += DT
+            for w in car.wheels:
+                worst = max(worst, abs(w.slip_ratio))
+            if car.speed_kmh() >= 100.0 and hit is None:
+                hit = t
+        return hit, car.speed_kmh(), worst
+
+    results = {}
+    print("  power  drive   0-100 s   top km/h   peak slip")
+    for p in (0.5, 1.0, 2.0):
+        hit, top, slip = launch(p)
+        results[p] = (hit, top, slip)
+        print("  %4.0f%%  RWD    %7s     %5.0f      %.2f"
+              % (p * 100, "%.2f" % hit if hit else "n/a", top, slip))
+
+    half = results[0.5]
+    stock = results[1.0]
+    double = results[2.0]
+
+    check("halving the power makes the car slower",
+          half[0] is not None and stock[0] is not None and half[0] > stock[0] * 1.3,
+          "0-100 barely moved")
+    check("doubling the power makes the car quicker",
+          double[0] is not None and double[0] < stock[0] * 0.95,
+          "0-100 barely moved")
+    check("more power means more wheelspin", double[2] > stock[2],
+          "traction control is swallowing the whole difference")
+    # A power slider that lets the car reach an absurd speed is a bug, not a
+    # feature: drag has to still bite.
+    check("top speed stays physically plausible", double[1] < 400.0,
+          "%.0f km/h" % double[1])
+    check("the stock car is unchanged by the feature existing",
+          abs(stock[0] - 4.92) < 0.15, "0-100 is now %.2f s" % stock[0])
+
+
+def test_all_wheel_drive():
+    """Four wheel drive must drive four wheels, and help off the line."""
+    print("\n== four wheel drive ==")
+
+    car = Car(REST_HEIGHT)
+    car.all_wheel_drive = True
+    car.front_torque_split = 0.4
+    for _ in range(360):
+        car.step()
+    car.throttle = 1.0
+    for _ in range(30):
+        car.step()
+
+    front = [w for w in car.wheels if w.is_steering]
+    rear = [w for w in car.wheels if not w.is_steering]
+    front_torque = sum(abs(w.drive_torque) for w in front)
+    rear_torque = sum(abs(w.drive_torque) for w in rear)
+    total = front_torque + rear_torque
+    share = front_torque / max(total, 1e-6)
+    print("  torque split: %.0f%% front / %.0f%% rear (asked for 40/60)"
+          % (100 * share, 100 * (1 - share)))
+
+    check("the front axle receives torque", front_torque > 1.0,
+          "front wheels are getting nothing")
+    check("the split matches the setting", abs(share - 0.4) < 0.05,
+          "%.0f%% front" % (100 * share))
+
+    # And rear drive must still be rear drive.
+    rwd = Car(REST_HEIGHT)
+    for _ in range(360):
+        rwd.step()
+    rwd.throttle = 1.0
+    for _ in range(30):
+        rwd.step()
+    rwd_front = sum(abs(w.drive_torque) for w in rwd.wheels if w.is_steering)
+    check("rear drive still sends nothing to the front", rwd_front < 1e-6,
+          "%.1f Nm reached the front axle" % rwd_front)
+
+    # 4WD should out-launch RWD once there is enough power to spin the rears.
+    def zero_to_hundred(awd, power):
+        c = Car(REST_HEIGHT)
+        c.all_wheel_drive = awd
+        c.engine_power = power
+        for _ in range(360):
+            c.step()
+        c.throttle = 1.0
+        t = 0.0
+        for _ in range(120 * 18):
+            c.step()
+            t += DT
+            if c.speed_kmh() >= 100.0:
+                return t
+        return None
+
+    for power in (1.0, 2.0):
+        r = zero_to_hundred(False, power)
+        a = zero_to_hundred(True, power)
+        print("  %3.0f%% power: RWD %.2f s, AWD %.2f s" % (power * 100, r, a))
+        if power > 1.5:
+            check("4WD launches better when power exceeds rear grip", a < r,
+                  "AWD %.2f s vs RWD %.2f s" % (a, r))
+
+
 def test_stability():
     print("\n== stability: 30 s parked, must not drift or sink ==")
     car = Car(REST_HEIGHT)
@@ -1670,6 +1811,8 @@ def main():
     test_contact_normal_smoothing()
     test_stuck_recovery()
     test_normal_blend_is_safe()
+    test_engine_power_setting()
+    test_all_wheel_drive()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES
                     else "FAILURES: " + ", ".join(FAILURES)))
     return 1 if FAILURES else 0

@@ -575,6 +575,129 @@ def test_hidden_car_interior():
           ", ".join(caught))
 
 
+def test_interior_split_keeps_the_body():
+    """Hiding the cabin must not take the bodywork with it.
+
+    v3.1 shipped a per-NODE hide: if any surface on a MeshInstance3D used an
+    interior material, the whole node was switched off. The converter exports
+    the entire car body as ONE node with 35 surfaces - 20 interior, 15
+    exterior - so hiding the dashboard also hid the paint, the chassis, the
+    lights and the glass. The wheels are separate nodes with no interior
+    surfaces, so they stayed: four tyres floating over the grass.
+    """
+    print("\n== hiding the cabin must not hide the car ==")
+    model = open(os.path.join(ROOT, "scripts", "car_model.gd")).read()
+
+    check("the split is per surface, not per node",
+          "_mesh_from_surfaces" in model and "_split_mesh_node" in model)
+    check("the old per-node hide is gone", "_find_interior" not in model)
+    check("the original node keeps the exterior",
+          "mesh_node.mesh = exterior_mesh" in model)
+    check("the cabin goes on its own node",
+          "cabin.mesh = interior_mesh" in model)
+
+    # A node that is entirely exterior must never be touched.
+    check("wholly exterior nodes are left alone",
+          "if interior_surfaces.is_empty():" in model)
+
+    # Prove against the real asset that a mixed node exists - otherwise this
+    # test is guarding against nothing.
+    gltf = json.load(open(os.path.join(ROOT, "assets", "car", "bmw_1m.gltf")))
+    materials = [m.get("name", "") for m in gltf["materials"]]
+    tokens = re.search(r"const INTERIOR_MATERIALS := \[(.*?)\]", model, re.S)
+    names = re.findall(r'"([^"]+)"', tokens.group(1)) if tokens else []
+
+    mixed = []
+    for node in gltf["nodes"]:
+        if "mesh" not in node:
+            continue
+        prims = gltf["meshes"][node["mesh"]]["primitives"]
+        inside = 0
+        outside = 0
+        for prim in prims:
+            mat = prim.get("material")
+            if mat is None:
+                continue
+            if any(tok in materials[mat].lower() for tok in names):
+                inside += 1
+            else:
+                outside += 1
+        if inside and outside:
+            mixed.append((node.get("name", "?"), inside, outside))
+
+    for name, inside, outside in mixed:
+        print("  node '%s': %d interior + %d exterior surfaces on ONE node"
+              % (name, inside, outside))
+    check("the asset really does mix both on one node", bool(mixed),
+          "nothing to split - this test proves nothing")
+
+
+def test_wheel_spin_direction():
+    """Wheels must roll forwards when the car drives forwards.
+
+    Godot is right-handed and the car faces -Z. A positive rotation about the
+    wheel's +X axis carries the top of the tyre towards +Z, i.e. backwards.
+    `spin` is positive when driving forward, so feeding it straight into
+    rotation.x span the wheels the wrong way.
+    """
+    print("\n== wheel spin direction ==")
+    wheel = open(os.path.join(ROOT, "scripts", "wheel.gd")).read()
+    body = "\n".join(l.split("#")[0] for l in wheel.splitlines())
+
+    check("the visual angle is negated",
+          re.search(r"wheel_visual\.rotation\s*=\s*Vector3\(\s*-", body)
+          is not None,
+          "rotation.x is not negated - the wheels will spin backwards")
+
+    # Reproduce the geometry rather than asserting it.
+    import math as _m
+    angle = 0.3
+    top = (0.0, 0.33, 0.0)
+    z = top[1] * _m.sin(angle)
+    print("  rotating the top of the tyre by +%.1f rad about +X gives z = %+.3f"
+          % (angle, z))
+    print("  the car faces -Z, so +z means the top moved BACKWARDS")
+    check("a positive angle really does spin backwards", z > 0.0)
+
+    # And the angle must advance on the physics tick, not the render frame.
+    check("the angle is integrated in update_spin, on the physics tick",
+          "_prev_spin_angle = spin_angle" in body
+          and "func update_spin" in body)
+    check("update_visuals interpolates rather than integrating",
+          "get_physics_interpolation_fraction" in body
+          and "spin_angle = wrapf(spin_angle + spin * delta" not in
+          body[body.index("func update_visuals"):])
+
+
+def test_frame_rate_floor():
+    """The engine must not be able to lock itself at a low frame rate.
+
+    main.cpp:4031 clamps physics catch-up to max_physics_steps_per_frame.
+    When the game falls behind it replays that many full vehicle ticks in one
+    frame, which makes that frame long too, and it saturates - parking the
+    frame rate at exactly physics_hz / max_steps. At 120 Hz with 8 steps that
+    is 15.0 fps, which is the number the user reported.
+    """
+    print("\n== physics catch-up floor ==")
+    text = open(os.path.join(ROOT, "project.godot")).read()
+    hz = int(re.search(r"common/physics_ticks_per_second=(\d+)", text).group(1))
+    steps = int(re.search(r"common/max_physics_steps_per_frame=(\d+)",
+                          text).group(1))
+    floor_fps = hz / steps
+    print("  %d Hz physics / %d steps -> the game cannot lock below %.1f fps"
+          % (hz, steps, floor_fps))
+    print("  (the reported lock-up was at 120/8 = 15.0 fps)")
+
+    check("the lock-up floor is not near 15 fps", floor_fps > 25.0,
+          "floor is %.1f fps" % floor_fps)
+    check("one hitch cannot cascade into many ticks", steps <= 4,
+          "%d ticks of catch-up per frame" % steps)
+    # Below the floor, simulated time slows instead of the game seizing.
+    # That is the better failure, but it should not start too early.
+    check("time still runs true at ordinary frame rates", floor_fps <= 60.0,
+          "time dilates below %.1f fps" % floor_fps)
+
+
 def test_quality_presets():
     print("\n== graphics presets ==")
     gs = open(os.path.join(ROOT, "scripts", "game_settings.gd")).read()
@@ -640,6 +763,9 @@ def main():
     test_backface_culling()
     test_shader_variants()
     test_hidden_car_interior()
+    test_interior_split_keeps_the_body()
+    test_wheel_spin_direction()
+    test_frame_rate_floor()
     test_quality_presets()
     test_input()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES

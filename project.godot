@@ -132,13 +132,31 @@ toggle_debug={
 common/physics_ticks_per_second=120
 ; How many physics ticks a single frame may run.
 ;
-; This was 4, which sounds conservative but has a nasty edge: at 120 Hz
-; physics the engine needs 120/fps ticks per frame, so 4 ticks only covers
-; down to 30 fps. Below that it cannot keep up and simulated time simply runs
-; slow - at 20 fps the car moves at 67% speed. A machine that is already
-; struggling then also goes into slow motion, which is exactly the wrong
-; failure mode. 8 is the engine default and covers down to 15 fps.
-common/max_physics_steps_per_frame=8
+; THIS IS THE "sometimes it drops to 15 fps" BUG, and it was my doing.
+;
+; main.cpp:4031 clamps the catch-up:
+;     if (advance.physics_steps > max_physics_steps) {
+;         process_step -= (advance.physics_steps - max_physics_steps) * physics_step;
+;         advance.physics_steps = max_physics_steps;
+;     }
+; so when the game falls behind it replays up to max_physics_steps full
+; vehicle ticks inside one frame. Those make that frame long too, which owes
+; more ticks, and it saturates - parking the frame rate at exactly
+; physics_hz / max_physics_steps and staying there.
+;
+; At 120 Hz with 8 steps that floor is 120/8 = 15.0 fps. An exact match for
+; the reported number, and it explains why it locks at 15 rather than
+; wandering around.
+;
+; I raised this from 4 to 8 in v2.8 to stop simulated time dilating below
+; 30 fps, which was a real problem - but it moved the lock-up floor from
+; 30 fps down to 15 and made the spiral twice as deep.
+;
+; 3 puts the floor at 120/3 = 40 fps: the game can no longer lock itself
+; below 40, one hitch can only ever cost three ticks of catch-up, and time
+; still runs true down to 40 fps. Slower than that and the clock slows
+; instead of the game seizing, which is the better failure of the two.
+common/max_physics_steps_per_frame=3
 common/physics_jitter_fix=0.5
 3d/default_gravity=9.81
 3d/solver/solver_iterations=24

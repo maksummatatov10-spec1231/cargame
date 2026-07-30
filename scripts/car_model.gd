@@ -58,7 +58,7 @@ func _ready() -> void:
 	var root := model_scene.instantiate()
 	add_child(root)
 	_collect(root)
-	_find_interior(root)
+	_split_interior(root)
 	# The wheels are moved out of the imported scene and under the RayWheels.
 	# Deferring it keeps Godot from complaining about re-parenting while the
 	# tree is still being set up.
@@ -84,26 +84,95 @@ func _collect(node: Node) -> void:
 		_collect(child)
 
 
-## Collects the cabin surfaces so they can be switched off in the chase view.
-func _find_interior(node: Node) -> void:
+## Splits the cabin surfaces off into their own MeshInstance3D.
+##
+## This has to work per SURFACE, not per node, and getting that wrong is what
+## broke v3.1: the converter exports the whole car body as ONE node carrying
+## 35 surfaces, 20 interior and 15 exterior. The old code saw "this node has
+## an interior surface" and hid the node, which took the paint, the chassis,
+## the lights and the glass with it - leaving four wheels floating over the
+## grass. The wheels survived only because they are separate nodes.
+##
+## Godot has no way to hide an individual surface: visibility lives on the
+## node. So the mesh is rebuilt as two meshes - exterior and interior - on
+## two nodes, and the interior node is the one that gets switched.
+func _split_interior(node: Node) -> void:
+	var children := node.get_children()
 	var mesh_node := node as MeshInstance3D
 	if mesh_node != null and mesh_node.mesh != null:
-		var interior := false
-		for i in mesh_node.mesh.get_surface_count():
-			var mat := mesh_node.mesh.surface_get_material(i)
-			if mat == null:
-				continue
-			var id := String(mat.resource_name).to_lower()
-			for token in INTERIOR_MATERIALS:
-				if id.contains(token):
-					interior = true
-					break
-			if interior:
-				break
-		if interior:
-			_interior.append(mesh_node)
-	for child in node.get_children():
-		_find_interior(child)
+		_split_mesh_node(mesh_node)
+	for child in children:
+		_split_interior(child)
+
+
+func _split_mesh_node(mesh_node: MeshInstance3D) -> void:
+	var source := mesh_node.mesh
+	var count := source.get_surface_count()
+	if count == 0:
+		return
+
+	var interior_surfaces: Array[int] = []
+	var exterior_surfaces: Array[int] = []
+	for i in count:
+		if _is_interior_surface(source, i):
+			interior_surfaces.append(i)
+		else:
+			exterior_surfaces.append(i)
+
+	# Nothing to do if the node is entirely one or the other. A wholly
+	# interior node can simply be switched as-is.
+	if interior_surfaces.is_empty():
+		return
+	if exterior_surfaces.is_empty():
+		_interior.append(mesh_node)
+		return
+
+	var exterior_mesh := _mesh_from_surfaces(source, exterior_surfaces)
+	var interior_mesh := _mesh_from_surfaces(source, interior_surfaces)
+	if exterior_mesh == null or interior_mesh == null:
+		return
+
+	# The original node keeps the exterior, so every other reference to it -
+	# the body_part lookup, the reparenting - still points at the right thing.
+	mesh_node.mesh = exterior_mesh
+
+	var cabin := MeshInstance3D.new()
+	cabin.name = String(mesh_node.name) + "_interior"
+	cabin.mesh = interior_mesh
+	cabin.transform = Transform3D.IDENTITY
+	# The cabin is enclosed by the bodywork, so it never needs to cast.
+	cabin.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mesh_node.add_child(cabin)
+	_interior.append(cabin)
+
+
+func _is_interior_surface(source: Mesh, index: int) -> bool:
+	var mat := source.surface_get_material(index)
+	if mat == null:
+		return false
+	# resource_name is the property; get_name() is the same value on every
+	# Resource (core/io/resource.h:105). The glTF importer fills it with the
+	# material name from the file.
+	var id := String(mat.resource_name).to_lower()
+	for token in INTERIOR_MATERIALS:
+		if id.contains(token):
+			return true
+	return false
+
+
+## Builds a new mesh containing only the listed surfaces of the source.
+func _mesh_from_surfaces(source: Mesh, surfaces: Array[int]) -> ArrayMesh:
+	var out := ArrayMesh.new()
+	for index in surfaces:
+		var arrays := source.surface_get_arrays(index)
+		if arrays.is_empty():
+			continue
+		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		out.surface_set_material(out.get_surface_count() - 1,
+			source.surface_get_material(index))
+	if out.get_surface_count() == 0:
+		return null
+	return out
 
 
 ## Shows or hides the cabin. Called by the camera when the view changes.

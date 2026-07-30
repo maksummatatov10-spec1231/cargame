@@ -553,19 +553,35 @@ def check_frame_rate_control():
               "" if m.group(1) in ("0", "3")
               else "mode %s pins fps to the refresh rate" % m.group(1))
 
-    # Physics must not be able to put the game into slow motion. At 120 Hz the
-    # engine needs 120/fps ticks per frame, so a cap of 4 only covers down to
-    # 30 fps; below that simulated time runs slow, which is the worst possible
-    # thing to do to a machine that is already struggling.
+    # physics_hz / max_physics_steps_per_frame is a single number with TWO
+    # opposite meanings, and I had a check demanding each of them:
+    #
+    #   below it, simulated time runs slow (main.cpp:4033 discards the
+    #     leftover time), so a LOW value is wanted;
+    #   at it, the frame rate can lock, because catch-up ticks make the next
+    #     frame long too and it saturates, so a HIGH value is wanted.
+    #
+    # v2.8 set 8 steps to push the dilation floor down to 15 fps. That gave
+    # the user a game that would suddenly seize at exactly 120/8 = 15.0 fps.
+    #
+    # The lock-up is far worse than the dilation: at 39 fps the clock slows a
+    # few percent and the car still drives, whereas locking at 15 fps makes
+    # it unplayable and it cannot recover on its own. So the value is chosen
+    # against the lock-up, and this check now guards the band rather than one
+    # end of it.
     hz = int(re.search(r"common/physics_ticks_per_second=(\d+)",
                        text).group(1))
     steps = int(re.search(r"common/max_physics_steps_per_frame=(\d+)",
                           text).group(1))
     floor_fps = hz / steps
-    print("  physics %d Hz, max %d steps/frame -> time is real down to %.1f fps"
+    print("  physics %d Hz, max %d steps/frame -> floor at %.1f fps"
           % (hz, steps, floor_fps))
-    check("simulated time stays real at low frame rates", floor_fps <= 20.0,
-          "" if floor_fps <= 20.0 else "slow motion below %.1f fps" % floor_fps)
+    print("    below it the clock slows; at it the frame rate can lock")
+    check("the game cannot lock itself at an unplayable frame rate",
+          floor_fps > 25.0,
+          "" if floor_fps > 25.0 else "can lock at %.1f fps" % floor_fps)
+    check("time still runs true at playable frame rates", floor_fps <= 60.0,
+          "" if floor_fps <= 60.0 else "clock slows below %.1f fps" % floor_fps)
 
     # And the settings singleton must be loaded before any scene.
     check("the settings autoload is registered",

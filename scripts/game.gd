@@ -84,6 +84,16 @@ func _spawn(index: int) -> void:
 	vehicle.name = "Vehicle"
 	add_child(vehicle)
 
+	# A freshly spawned vehicle has never seen the settings, and the settings
+	# autoload only walks the tree when something changes - so push the
+	# current tuning into it here.
+	var settings := get_tree().root.get_node_or_null("GameSettings")
+	if settings != null:
+		vehicle.apply_tuning(
+			float(settings.get("engine_power")),
+			bool(settings.get("force_awd")),
+			float(settings.get("front_split")))
+
 	var point := spawn_transform(float(entry["drop"]))
 	vehicle.global_transform = point
 	vehicle.set_spawn(point)

@@ -176,6 +176,7 @@ var _lag_ratio := 0.0               ## relaxation-filtered slip ratio
 var _lag_tan_alpha := 0.0           ## relaxation-filtered tan(slip angle)
 var _mf_stiffness := 1.685211       ## B, solved so the peak lands exactly at s = 1
 var _filtered_normal := Vector3.UP
+var _prev_spin_angle := 0.0         ## spin_angle one physics tick ago
 
 func _ready() -> void:
 	_inertia = 0.5 * wheel_mass * tyre_radius * tyre_radius
@@ -200,6 +201,8 @@ func reset_state() -> void:
 	slip_ratio = 0.0
 	slip_angle = 0.0
 	spring_force = 0.0
+	spin_angle = 0.0
+	_prev_spin_angle = 0.0
 	_filtered_normal = Vector3.UP
 	tyre_force = Vector2.ZERO
 	drive_torque = 0.0
@@ -467,7 +470,15 @@ func update_tyre(delta: float, contact_velocity: Vector3) -> void:
 
 
 ## Integrates the wheel's own rotation from the drive, brake and road torques.
+##
+## The visual angle is advanced here, on the physics tick, rather than in
+## update_visuals(). The wheel mesh is a child of this RayCast3D and therefore
+## moves on the physics clock; advancing its spin on the render clock instead
+## put the two on different clocks and made the wheels look like they were
+## stuttering against the car. Same class of bug as the camera in v3.0.
 func update_spin(delta: float) -> void:
+	_prev_spin_angle = spin_angle
+	spin_angle = wrapf(spin_angle + spin * delta, -TAU, TAU)
 	var road_torque := -tyre_force.x * tyre_radius
 	var net := drive_torque + road_torque
 	# Accelerating the wheel also means accelerating the engine and gearbox
@@ -537,10 +548,16 @@ func set_steer(angle: float) -> void:
 
 ## Drives the wheel meshes. Called every rendered frame so the animation stays
 ## smooth even though the physics runs at a fixed tick rate.
-func update_visuals(delta: float) -> void:
+func update_visuals(_delta: float) -> void:
 	if wheel_visual == null and hub_visual == null:
 		return
-	spin_angle = wrapf(spin_angle + spin * delta, -TAU, TAU)
+
+	# Interpolate the angle between the last two physics ticks, so the wheel
+	# is on the same clock as the body it is bolted to.
+	var f := Engine.get_physics_interpolation_fraction()
+	var angle := _prev_spin_angle + wrapf(spin_angle - _prev_spin_angle,
+		-PI, PI) * clampf(f, 0.0, 1.0)
+
 	# The wheel meshes are children of this RayCast3D, which is already yawed by
 	# set_steer(), so the steering animation comes for free and only the
 	# suspension lift, the camber and the rolling spin are applied here.
@@ -551,4 +568,10 @@ func update_visuals(delta: float) -> void:
 		hub_visual.rotation = Vector3(0.0, 0.0, camber)
 	if wheel_visual:
 		wheel_visual.position.y = lift
-		wheel_visual.rotation = Vector3(spin_angle, 0.0, camber)
+		# NEGATED. Godot is right-handed and the car faces -Z, so a positive
+		# rotation about the wheel's +X axis carries the top of the tyre
+		# towards +Z - backwards. `spin` is positive when driving forward
+		# (slip = spin * radius - v_long, with v_long positive forwards), so
+		# feeding it in directly span the wheels the wrong way. Verified:
+		# rotating (0, 0.33, 0) by +0.3 rad about +X gives z = +0.098.
+		wheel_visual.rotation = Vector3(-angle, 0.0, camber)
