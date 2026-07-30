@@ -8,7 +8,9 @@ export_presets.cfg
 build/
 dist/
 *.zip
+# the source asset and the packaged release are deliberately tracked
 !ac-bmw-1m-free.zip
+!release/*.zip
 
 # editor / OS noise
 *.tmp
