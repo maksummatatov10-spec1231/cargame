@@ -186,13 +186,27 @@ func _gather_input(delta: float) -> void:
 		reset_to_spawn()
 
 
+## Teleports the car back to where it started.
+##
+## Assigning global_transform on a RigidBody3D only moves the node, and the
+## physics server overwrites it again on the next tick. The move has to go
+## through the server, which is what PhysicsServer3D.body_set_state does.
 func reset_to_spawn() -> void:
-	global_transform = _spawn_transform
+	PhysicsServer3D.body_set_state(get_rid(),
+		PhysicsServer3D.BODY_STATE_TRANSFORM, _spawn_transform)
+	PhysicsServer3D.body_set_state(get_rid(),
+		PhysicsServer3D.BODY_STATE_LINEAR_VELOCITY, Vector3.ZERO)
+	PhysicsServer3D.body_set_state(get_rid(),
+		PhysicsServer3D.BODY_STATE_ANGULAR_VELOCITY, Vector3.ZERO)
 	linear_velocity = Vector3.ZERO
 	angular_velocity = Vector3.ZERO
+
 	for w in _wheels:
 		w.spin = 0.0
+		w.reset_state()
 	gear = 1
+	_shift_timer = 0.0
+	_steer_position = 0.0
 	_engine_speed = idle_rpm * TAU / 60.0
 
 
@@ -222,10 +236,11 @@ func _physics_process(delta: float) -> void:
 
 
 func _update_steering() -> void:
-	# Speed sensitive steering ratio.
-	var scale := lerpf(1.0, high_speed_steer_scale,
+	# Speed sensitive steering ratio. (Named ratio, not scale: "scale" would
+	# shadow Node3D.scale.)
+	var lock_ratio := lerpf(1.0, high_speed_steer_scale,
 		clampf(speed_kmh / steer_speed_falloff, 0.0, 1.0))
-	var angle := deg_to_rad(max_steer_deg) * steer_input * scale
+	var angle := deg_to_rad(max_steer_deg) * steer_input * lock_ratio
 
 	if absf(angle) < 1e-5 or _front.size() != 2:
 		for w in _front:

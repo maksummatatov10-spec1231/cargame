@@ -205,12 +205,14 @@ Those numbers are all in the right ballpark for a real BMW 1M (4.9 s claimed
 | --- | --- |
 | `tools/sim_check.py` | drop, settling, static loads, weight distribution, acceleration, braking, cornering, 30 s parked stability |
 | `tools/anim_check.py` | wheel roll matches ground speed, Ackermann, speed sensitive lock, airborne coasting, pivot geometry |
+| `tools/camera_check.py` | camera never clips inside the car, view direction never degenerate, rig wiring |
 | `tools/project_check.py` | scene resource integrity, glTF validity, input map, node paths |
 
-Run all three:
+Run all four:
 
 ```bash
-python3 tools/sim_check.py && python3 tools/anim_check.py && python3 tools/project_check.py
+python3 tools/sim_check.py && python3 tools/anim_check.py \
+  && python3 tools/camera_check.py && python3 tools/project_check.py
 ```
 
 ---
@@ -230,6 +232,8 @@ parser and glTF writer that:
 * rebuilds PBR materials from the FBX Blinn-Phong parameters (converting
   specular exponent to roughness) with hand-tuned overrides for paint, glass,
   chrome, rubber and brake discs
+* repairs the handful of zero-length normals and drops the zero-area triangles
+  present in the source asset (Godot warns about these during LOD generation)
 * generates the convex collision decomposition
 
 Result: **22 MB FBX → 3.3 MB glTF**, 100 605 triangles, wheelbase 2.632 m and

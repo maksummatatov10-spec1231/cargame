@@ -110,17 +110,20 @@ shadow_enabled = false
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.68, 12)
 
 [node name="ChaseCamera" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.68, 12)
 script = ExtResource("3_camera")
 target_path = NodePath("../Car/CameraTarget")
 
 [node name="SpringArm3D" type="SpringArm3D" parent="ChaseCamera"]
-transform = Transform3D(1, 0, 0, 0, 0.9877, 0.1564, 0, -0.1564, 0.9877, 0, 2.15, 0)
+transform = Transform3D(1, 0, 0, 0, 0.98769, -0.15643, 0, 0.15643, 0.98769, 0, 1.55, 0)
 spring_length = 6.2
 margin = 0.35
+collision_mask = 1
 
 [node name="Camera3D" type="Camera3D" parent="ChaseCamera/SpringArm3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
 fov = 68.0
-near = 0.08
+near = 0.05
 far = 900.0
 current = true
 

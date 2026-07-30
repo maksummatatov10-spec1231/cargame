@@ -22,6 +22,21 @@ window/size/viewport_height=900
 window/stretch/mode="canvas_items"
 window/vsync/vsync_mode=1
 
+[importer_defaults]
+
+; Every texture in this project is a 3D car texture. Without these, Godot
+; imports each PNG with 2D defaults, then notices it is used in 3D and imports
+; it a second time with mipmaps and VRAM compression - that is the wall of
+; "текстура используется в 3D..." messages on first open. Setting the right
+; values up front means each texture is imported once, correctly.
+texture={
+"compress/mode": 2,
+"compress/normal_map": 0,
+"detect_3d/compress_to": 0,
+"mipmaps/generate": true,
+"roughness/mode": 0
+}
+
 [input]
 
 drive_forward={

@@ -349,7 +349,10 @@ class Converter:
                 corners.append(((gx, gy, gz), nrm, uv))
 
             for i in range(1, len(corners) - 1):
-                out.append((mid, (corners[0], corners[i], corners[i + 1])))
+                tri = (corners[0], corners[i], corners[i + 1])
+                tri = _sanitise_triangle(tri)
+                if tri is not None:
+                    out.append((mid, tri))
             poly = []
             poly_index += 1
         return out
@@ -672,6 +675,41 @@ class Converter:
         json.dump(info, open(os.path.join(self.out_dir, "bmw_1m_collision.json"), "w"), indent=1)
         print("collision slabs:", len(shapes),
               "points:", sum(len(s) for s in shapes))
+
+
+def _sanitise_triangle(tri):
+    """Drop degenerate triangles and repair unusable vertex normals.
+
+    A few faces in the source asset are zero-area or carry zero-length /
+    non-finite normals. Godot warns about them during LOD generation ("Ignoring
+    face with non-finite normal") and they can produce black shading artefacts,
+    so they are cleaned up here instead.
+    """
+    (p0, n0, uv0), (p1, n1, uv1), (p2, n2, uv2) = tri
+
+    for p in (p0, p1, p2):
+        if not all(math.isfinite(c) for c in p):
+            return None
+
+    u = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2])
+    v = (p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2])
+    face = (u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0])
+    area = math.sqrt(face[0] ** 2 + face[1] ** 2 + face[2] ** 2)
+    if area < 1e-12:
+        return None                      # zero-area face, nothing to shade
+    face = (face[0] / area, face[1] / area, face[2] / area)
+
+    fixed = []
+    for p, n, uv in ((p0, n0, uv0), (p1, n1, uv1), (p2, n2, uv2)):
+        length = math.sqrt(n[0] ** 2 + n[1] ** 2 + n[2] ** 2)
+        if not all(math.isfinite(c) for c in n) or length < 1e-6:
+            n = face                     # fall back to the geometric normal
+        else:
+            n = (n[0] / length, n[1] / length, n[2] / length)
+        fixed.append((p, n, uv))
+    return tuple(fixed)
 
 
 def transpose3(m):

@@ -119,7 +119,6 @@ var _tyre_deflection := 0.0
 var _prev_tyre_deflection := 0.0
 var _lag_ratio := 0.0               ## relaxation-filtered slip ratio
 var _lag_tan_alpha := 0.0           ## relaxation-filtered tan(slip angle)
-var _rest_visual_y := 0.0
 var _mf_stiffness := 1.685211       ## B, solved so the peak lands exactly at s = 1
 
 func _ready() -> void:
@@ -133,6 +132,23 @@ func _ready() -> void:
 		return
 	steer_angle = deg_to_rad(toe_deg)
 	rotation.y = steer_angle
+
+
+## Clears the transient state, so a respawned car does not inherit the slip and
+## suspension velocity it had at the moment it was reset.
+func reset_state() -> void:
+	travel = 0.0
+	_prev_travel = 0.0
+	_tyre_deflection = 0.0
+	_prev_tyre_deflection = 0.0
+	_lag_ratio = 0.0
+	_lag_tan_alpha = 0.0
+	slip_ratio = 0.0
+	slip_angle = 0.0
+	spring_force = 0.0
+	tyre_force = Vector2.ZERO
+	drive_torque = 0.0
+	brake_torque = 0.0
 
 
 ## Rotational inertia of the wheel (kg m^2).

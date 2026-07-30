@@ -9,9 +9,6 @@ extends Node3D
 ## which is what the wheel raycasts look for.
 @export var ground_colour := Color(0.34, 0.38, 0.31)
 
-@onready var _car : Vehicle = $Car
-
-
 func _ready() -> void:
 	_build_ground()
 	_build_props()
@@ -94,13 +91,13 @@ func _build_props() -> void:
 			Vector3(2.4, 0.8, 2.4), Color(0.5, 0.52, 0.55), a)
 
 
-func _add_box(parent: Node3D, pos: Vector3, size: Vector3, colour: Color, yaw: float) -> void:
+func _add_box(parent: Node3D, pos: Vector3, size: Vector3, colour: Color,
+		euler: Vector3) -> void:
 	var body := StaticBody3D.new()
 	body.position = pos
-	body.rotation.y = yaw if size.y > 0.5 else 0.0
-	if size.y > 0.5 and absf(yaw) < 1.0:
-		body.rotation = Vector3(yaw, 0.0, 0.0)
+	body.rotation = euler
 	body.collision_layer = 1
+	body.collision_mask = 1
 
 	var col := CollisionShape3D.new()
 	var box := BoxShape3D.new()
