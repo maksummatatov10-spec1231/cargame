@@ -1,10 +1,9 @@
-[gd_scene load_steps=14 format=3]
+[gd_scene load_steps=13 format=3]
 
 [ext_resource type="Script" path="res://scripts/game.gd" id="2_world"]
 [ext_resource type="Script" path="res://scripts/chase_camera.gd" id="3_camera"]
 [ext_resource type="Script" path="res://scripts/hud.gd" id="4_hud"]
-[ext_resource type="Script" path="res://scripts/terrain.gd" id="5_terrain"]
-[ext_resource type="Script" path="res://scripts/forest.gd" id="6_forest"]
+[ext_resource type="PackedScene" path="res://scenes/world.tscn" id="5_world"]
 [ext_resource type="Script" path="res://scripts/sky_clouds.gd" id="7_clouds"]
 
 [sub_resource type="ProceduralSkyMaterial" id="Sky"]
@@ -32,8 +31,10 @@ sky = SubResource("SkyRes")
 ; large part of why the old scene looked washed out.
 ambient_light_source = 3
 ambient_light_color = Color(0.5, 0.58, 0.72, 1)
-ambient_light_sky_contribution = 0.42
-ambient_light_energy = 0.85
+; With SDFGI gone the sky has to carry a little more of the ambient, otherwise
+; shaded sides of objects go too dark.
+ambient_light_sky_contribution = 0.55
+ambient_light_energy = 1.0
 reflected_light_source = 2
 ; ACES gives a filmic highlight roll-off instead of clipping to white. Exposure
 ; is pulled back and white raised so the sky has somewhere to go.
@@ -53,21 +54,14 @@ ssao_light_affect = 0.15
 ssao_ao_channel_affect = 0.4
 ssil_enabled = false
 ; Reflections fade out quickly, so a shorter march is invisible but cheaper.
-ssr_enabled = true
-ssr_max_steps = 24
-ssr_fade_in = 0.2
-ssr_fade_out = 4.0
-ssr_depth_tolerance = 0.4
-; SDFGI is the most expensive thing in the scene. Three cascades with a coarser
-; cell still lights the area around the car properly - the far hills get their
-; light from the sky ambient anyway - and no bounce feedback saves another pass.
-sdfgi_enabled = true
-sdfgi_use_occlusion = false
-sdfgi_bounce_feedback = 0.0
-sdfgi_cascades = 3
-sdfgi_min_cell_size = 0.4
-sdfgi_y_scale = 2
-sdfgi_energy = 1.0
+; Screen space reflections off: there is nothing reflective outdoors except the
+; car itself, and it costs a full-resolution pass every frame.
+ssr_enabled = false
+; SDFGI is off. It only reached about 100 m of a 400 m map, and because the
+; cascades follow the camera it re-voxelised the world continuously while
+; driving - constant stutter for indirect light you cannot really see against
+; a bright sky. The sky ambient below does the same job for free outdoors.
+sdfgi_enabled = false
 glow_enabled = true
 glow_normalized = true
 glow_intensity = 0.55
@@ -164,19 +158,7 @@ light_energy = 0.14
 light_specular = 0.0
 shadow_enabled = false
 
-[node name="Terrain" type="StaticBody3D" parent="." groups=["terrain"]]
-script = ExtResource("5_terrain")
-size = 400.0
-resolution = 257
-height_scale = 34.0
-feature_size = 190.0
-flat_radius = 26.0
-flat_falloff = 34.0
-
-[node name="Forest" type="Node3D" parent="."]
-script = ExtResource("6_forest")
-clearing_radius = 30.0
-collision_radius = 170.0
+[node name="World" parent="." instance=ExtResource("5_world")]
 
 [node name="ChaseCamera" type="Node3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.68, 12)

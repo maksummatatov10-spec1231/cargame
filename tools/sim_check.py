@@ -333,6 +333,7 @@ SPRING_TRAVEL = 0.16
 RIDE_DROP = 0.075
 GEARS = [4.11, 2.32, 1.54, 1.18, 1.00, 0.85]
 FINAL = 3.15
+REVERSE_RATIO = 3.73
 PEAK_TORQUE = 450.0
 PEAK_TQ_RPM, PEAK_PW_RPM = 3000.0, 5900.0
 IDLE, REDLINE = 850.0, 7000.0
@@ -407,7 +408,14 @@ class Car:
         return self.body.pos[1] - m_mul_v(self.body.basis, self.com)[1]
 
     def ratio(self):
-        return GEARS[min(self.gear - 1, len(GEARS) - 1)] * FINAL if self.gear > 0 else 0.0
+        # Mirrors current_ratio(), including reverse. The mirror used to return
+        # 0 in reverse, so the car could select it but never move - which hid
+        # the fact that reverse drive works in the game.
+        if self.gear == 0:
+            return 0.0
+        if self.gear < 0:
+            return -REVERSE_RATIO * FINAL
+        return GEARS[min(self.gear - 1, len(GEARS) - 1)] * FINAL
 
     def step(self):
         b = self.body
@@ -464,7 +472,9 @@ class Car:
         self.engine_speed = max(IDLE * math.tau / 60.0,
                                 min((REDLINE + 400.0) * math.tau / 60.0, self.engine_speed))
         rpm = self._rpm()
-        if self.shift_timer <= 0.0:
+        # Mirrors _auto_shift: reverse never shifts. Without the gear < 0 guard
+        # the mirror upshifted reverse into neutral and the car sat there.
+        if self.shift_timer <= 0.0 and self.gear > 0:
             if rpm > REDLINE * 0.94 and self.gear < len(GEARS):
                 self.gear += 1
                 self.shift_timer = 0.22
@@ -768,6 +778,115 @@ def test_smoothness():
     check("creeping at light throttle is steady", monotonic, "speed oscillates")
     check("light throttle still moves the car", speeds[-1] > 0.8,
           "%.2f m/s" % speeds[-1])
+
+
+def test_key_level_reverse():
+    """Drives via the two KEYS, not the internal throttle/brake fields.
+
+    The previous reverse test set car.throttle directly, which is why it passed
+    while the game was still broken: in reverse, _update_brakes overwrites
+    throttle with the brake key *before* the gear logic reads it, so pressing W
+    could never satisfy the "throttle > 0.5" test that leaves reverse. Escape
+    was mathematically impossible. Only a test that goes through the same key
+    mapping as the game can catch that.
+    """
+    print("\n== reverse escape, driven by the W and S keys ==")
+
+    class KeyCar(Car):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.key_w = 0.0
+            self.key_s = 0.0
+            self.reverse_hold = 0.0
+            self.reverse_armed = False
+
+        def step(self):
+            # Mirrors _gather_input + _update_brakes + _update_gear_selection,
+            # in the same order the game runs them.
+            raw_w, raw_s = self.key_w, self.key_s
+            fwd = self.forward_speed()
+            stationary = abs(fwd) < 0.25 and self.speed_kmh() < 1.5
+
+            braking = raw_s > 0.5
+            press_started = braking and not getattr(self, "_s_was_down", False)
+            self._s_was_down = braking
+            if self.gear > 0:
+                if press_started:
+                    self.reverse_armed = stationary
+                    self.reverse_hold = 0.0
+                elif not braking:
+                    self.reverse_armed = False
+                    self.reverse_hold = 0.0
+                if stationary and self.reverse_armed and braking and raw_w < 0.05:
+                    self.reverse_hold += DT
+                    if self.reverse_hold >= 0.45:
+                        self.gear = -1
+                        self.reverse_hold = 0.0
+                        self.reverse_armed = False
+                else:
+                    self.reverse_hold = 0.0
+            elif self.gear < 0:
+                self.reverse_armed = False
+                self.reverse_hold = 0.0
+                if stationary and raw_w > 0.5 and raw_s < 0.05:
+                    self.gear = 1
+
+            # pedal mapping, derived only from the raw keys
+            if self.gear < 0:
+                self.throttle = raw_s
+                self.brake = raw_w if fwd < -0.4 else 0.0
+            else:
+                self.throttle = raw_w
+                self.brake = raw_s
+            super().step()
+
+    car = KeyCar(REST_HEIGHT)
+    for _ in range(240):
+        car.step()
+
+    # drive off, then brake to a standstill holding S the whole way
+    car.key_w = 1.0
+    for _ in range(120 * 12):
+        car.step()
+    top = car.speed_kmh()
+    car.key_w = 0.0
+    car.key_s = 1.0
+    for _ in range(120 * 14):
+        car.step()
+    print("  reached %.0f km/h, braked to %.2f km/h, gear %d"
+          % (top, car.speed_kmh(), car.gear))
+    check("holding S to a stop does not select reverse", car.gear > 0,
+          "gear %d" % car.gear)
+
+    # release, then deliberately ask for reverse
+    car.key_s = 0.0
+    for _ in range(60):
+        car.step()
+    car.key_s = 1.0
+    for _ in range(120):
+        car.step()
+    print("  deliberate reverse request -> gear %d" % car.gear)
+    check("reverse can be selected on purpose", car.gear < 0)
+
+    # reverse a little way
+    for _ in range(120 * 2):
+        car.step()
+    reversing = car.forward_speed()
+    print("  reversing at %.2f m/s" % reversing)
+    check("the car actually reverses", reversing < -0.5, "%.2f m/s" % reversing)
+
+    # now press W to go forward again - the case that was impossible
+    car.key_s = 0.0
+    for _ in range(120 * 3):
+        car.step()
+    car.key_w = 1.0
+    for _ in range(120 * 6):
+        car.step()
+    print("  after pressing W: %.1f km/h in gear %d"
+          % (car.speed_kmh(), car.gear))
+    check("W gets the car out of reverse", car.gear > 0, "gear %d" % car.gear)
+    check("and it drives forward", car.forward_speed() > 5.0,
+          "%.2f m/s" % car.forward_speed())
 
 
 def test_reverse_latch():
@@ -1145,6 +1264,7 @@ def main():
     test_stability()
     test_smoothness()
     test_reverse_latch()
+    test_key_level_reverse()
     test_surfaces()
     test_pickup()
     test_defender()

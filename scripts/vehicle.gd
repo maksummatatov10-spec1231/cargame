@@ -131,6 +131,10 @@ signal gear_changed(gear: int)
 var throttle := 0.0
 var boost := 0.0                    ## 0..1, how hard the turbo button is held
 var brake_input := 0.0
+## Untouched key state: W and S. The pedal mapping below is derived from these
+## every tick, so nothing can clobber the values the gear logic depends on.
+var raw_forward := 0.0
+var raw_backward := 0.0
 var handbrake_input := 0.0
 var steer_input := 0.0
 
@@ -237,13 +241,20 @@ func _process(delta: float) -> void:
 
 
 func _gather_input(delta: float) -> void:
-	throttle = Input.get_action_strength("drive_forward")
-	brake_input = Input.get_action_strength("drive_backward")
+	# Raw key state, never modified afterwards. The reverse pedal swap used to
+	# overwrite `throttle` here, which made it impossible to leave reverse: the
+	# gear logic tests `throttle > 0.5`, but by the time it ran the value had
+	# already been replaced with the brake key. Keeping the raw inputs separate
+	# from the mapped pedals is what stops that whole class of bug.
+	raw_forward = Input.get_action_strength("drive_forward")
+	raw_backward = Input.get_action_strength("drive_backward")
+	throttle = raw_forward
+	brake_input = raw_backward
 	handbrake_input = Input.get_action_strength("handbrake")
 
 	# Turbo: only builds while the throttle is actually open, and spools with a
 	# short lag rather than switching on instantly, like real boost pressure.
-	var boost_target := Input.get_action_strength("turbo") * throttle
+	var boost_target := Input.get_action_strength("turbo") * maxf(raw_forward, 0.0)
 	boost = move_toward(boost, boost_target, boost_spool_rate * delta)
 
 	var target := Input.get_action_strength("steer_left") - Input.get_action_strength("steer_right")
@@ -289,6 +300,8 @@ func reset_to_spawn() -> void:
 	_reverse_hold = 0.0
 	_reverse_armed = false
 	_brake_was_down = false
+	raw_forward = 0.0
+	raw_backward = 0.0
 	_tc_cut = 0.0
 	_engine_speed = idle_rpm * TAU / 60.0
 
@@ -496,22 +509,28 @@ func _update_drivetrain(delta: float, forward_speed: float) -> void:
 ## the car is remembered and explicitly disqualified.
 func _update_gear_selection(forward_speed: float, delta: float) -> void:
 	var stationary := absf(forward_speed) < 0.25 and speed_kmh < 1.5
-	var braking := brake_input > 0.5
-
-	# Track individual presses rather than the pedal's current state.
+	# Raw keys, deliberately: `throttle` and `brake_input` have already been
+	# swapped for reverse by this point, so testing them here would mean the
+	# car could never be asked to go forward again.
+	var braking := raw_backward > 0.5
 	var press_started := braking and not _brake_was_down
-	if press_started:
-		# A press only counts for reverse if the car was already stopped when
-		# it began. The press that brings the car to a halt never qualifies.
-		_reverse_armed = stationary
-		_reverse_hold = 0.0
-	elif not braking:
-		_reverse_armed = false
-		_reverse_hold = 0.0
 	_brake_was_down = braking
 
 	if gear > 0:
-		if stationary and _reverse_armed and braking and throttle < 0.05:
+		# Reverse needs a brake press that BEGINS while the car is already
+		# stopped. Arming merely on release was not enough: a driver who has
+		# not touched the brake yet is armed by default, so the very press that
+		# brings the car to a halt would latch reverse - which is the "drove,
+		# stopped, cannot go forward" bug. Tying it to the start of the press
+		# closes that, because the press that stops the car began while moving.
+		if press_started:
+			_reverse_armed = stationary
+			_reverse_hold = 0.0
+		elif not braking:
+			_reverse_armed = false
+			_reverse_hold = 0.0
+
+		if stationary and _reverse_armed and braking and raw_forward < 0.05:
 			_reverse_hold += delta
 			if _reverse_hold >= reverse_select_delay:
 				gear = -1
@@ -522,10 +541,12 @@ func _update_gear_selection(forward_speed: float, delta: float) -> void:
 			_reverse_hold = 0.0
 	elif gear < 0:
 		# Coming back out of reverse is immediate; the car must not get stuck.
-		if stationary and throttle > 0.5 and brake_input < 0.05:
+		# This reads raw_forward so that pressing W always works, whatever the
+		# pedal mapping has done to `throttle`.
+		_reverse_armed = false
+		_reverse_hold = 0.0
+		if stationary and raw_forward > 0.5 and raw_backward < 0.05:
 			gear = 1
-			_reverse_hold = 0.0
-			_reverse_armed = false
 			gear_changed.emit(gear)
 
 
@@ -713,11 +734,18 @@ func _split_axle(axle: Array[RayWheel], axle_torque: float) -> void:
 
 
 func _update_brakes(forward_speed: float) -> void:
-	var pedal := brake_input
-	# In reverse the "S" key becomes the throttle, and "W" becomes the brake.
+	# Map the two keys onto throttle and brake for the gear we are in. This
+	# rewrites `throttle`/`brake_input`, so it must only ever read the raw key
+	# state - never its own previous output.
+	var pedal := 0.0
 	if gear < 0:
-		pedal = throttle if forward_speed < -0.4 else 0.0
-		throttle = brake_input
+		# Reverse: S drives, W brakes.
+		throttle = raw_backward
+		pedal = raw_forward if forward_speed < -0.4 else 0.0
+	else:
+		throttle = raw_forward
+		pedal = raw_backward
+	brake_input = raw_backward
 	for w in _wheels:
 		var base := front_brake_torque if w.is_steering else rear_brake_torque
 		w.brake_torque = base * pedal
@@ -726,7 +754,7 @@ func _update_brakes(forward_speed: float) -> void:
 
 	# Creep suppression: with no pedals and the car nearly stopped, apply just
 	# enough brake to hold it, exactly like leaving an automatic in Drive.
-	if throttle < 0.02 and pedal < 0.02 and absf(forward_speed) < 0.4:
+	if raw_forward < 0.02 and raw_backward < 0.02 and absf(forward_speed) < 0.4:
 		var hold := 900.0 * (1.0 - absf(forward_speed) / 0.4)
 		for w in _wheels:
 			w.brake_torque = maxf(w.brake_torque, hold)

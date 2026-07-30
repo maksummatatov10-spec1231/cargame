@@ -1,0 +1,22 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/terrain.gd" id="1_terrain"]
+[ext_resource type="Script" path="res://scripts/forest.gd" id="2_forest"]
+
+[node name="World" type="Node3D"]
+
+[node name="Terrain" type="StaticBody3D" parent="." groups=["terrain"]]
+script = ExtResource("1_terrain")
+size = 400.0
+resolution = 257
+height_scale = 34.0
+feature_size = 190.0
+noise_seed = 20260730
+flat_radius = 26.0
+flat_falloff = 34.0
+
+[node name="Forest" type="Node3D" parent="."]
+script = ExtResource("2_forest")
+clearing_radius = 30.0
+collision_radius = 170.0
+scatter_seed = 90210

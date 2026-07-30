@@ -1,3 +1,4 @@
+@tool
 class_name Forest
 extends Node3D
 
@@ -19,7 +20,12 @@ extends Node3D
 
 const WIND_SHADER := """
 shader_type spatial;
-render_mode cull_disabled, diffuse_burley, depth_prepass_alpha;
+// depth_prepass_alpha runs an alpha-discard prepass. This shader is fully
+// opaque and never writes ALPHA, so the prepass had nothing to keep and the
+// plants rendered invisible while their collision still worked - you could
+// drive through trees you could not see. Plain opaque rendering is correct
+// here, and cheaper.
+render_mode cull_disabled, diffuse_burley;
 
 uniform vec3 tint : source_color = vec3(1.0);
 uniform float wind_strength = 0.06;
@@ -57,9 +63,25 @@ void fragment() {
 
 ## Species to scatter: scene, count, scale range, slope limit, surfaces.
 const SPECIES := [
-	{"name": "tree", "count": 420, "scale": [0.85, 1.5], "max_slope": 0.34,
+	# Three detail bands by distance from the map centre, where the player
+	# starts. 420 full-detail trees would be 11.9 M triangles on their own.
+	#
+	# Only the near band casts shadows. Shadow rendering ignores
+	# visibility_range and redraws every caster once per cascade, so letting
+	# all 420 cast turned 12.5 M triangles into 37.5 M of shadow work per
+	# frame - that was the lag, and it dwarfed everything else in the scene.
+	{"name": "tree", "count": 70, "scale": [0.85, 1.5], "max_slope": 0.34,
 		"tint": Color(0.30, 0.40, 0.20), "collide": true, "radius": 0.55,
-		"anchor": 1.2, "wind": 0.035},
+		"anchor": 1.2, "wind": 0.035, "max_dist": 80.0, "cull": 170.0,
+		"shadows": true},
+	{"name": "tree_lod", "count": 180, "scale": [0.85, 1.5], "max_slope": 0.34,
+		"tint": Color(0.29, 0.39, 0.19), "collide": true, "radius": 0.55,
+		"anchor": 1.2, "wind": 0.035, "min_dist": 80.0, "max_dist": 170.0,
+		"cull": 240.0, "lod_bias": 2.0},
+	{"name": "tree_far", "count": 220, "scale": [0.85, 1.5], "max_slope": 0.34,
+		"tint": Color(0.28, 0.38, 0.19), "collide": false, "radius": 0.55,
+		"anchor": 1.2, "wind": 0.03, "min_dist": 170.0, "cull": 340.0,
+		"lod_bias": 4.0},
 	{"name": "fern_a", "count": 520, "scale": [0.7, 1.3], "max_slope": 0.42,
 		"tint": Color(0.26, 0.40, 0.18), "collide": false, "radius": 0.0,
 		"anchor": 0.1, "wind": 0.09, "cull": 75.0, "lod_bias": 2.5},
@@ -80,7 +102,7 @@ const SPECIES := [
 		"anchor": 0.0, "wind": 0.13, "cull": 55.0, "lod_bias": 3.0},
 	{"name": "rock_a", "count": 70, "scale": [0.25, 0.7], "max_slope": 1.0,
 		"tint": Color(0.40, 0.39, 0.37), "collide": true, "radius": 0.9,
-		"anchor": 99.0, "wind": 0.0, "cull": 200.0},
+		"anchor": 99.0, "wind": 0.0, "cull": 200.0, "shadows": true},
 	{"name": "rock_b", "count": 80, "scale": [0.2, 0.6], "max_slope": 1.0,
 		"tint": Color(0.38, 0.37, 0.36), "collide": true, "radius": 0.7,
 		"anchor": 99.0, "wind": 0.0, "cull": 200.0},
@@ -98,6 +120,13 @@ const SPECIES := [
 ## Reproducible layout.
 @export var scatter_seed := 90210
 
+## Tick this in the editor to re-scatter after changing anything above.
+@export var rebuild := false:
+	set(value):
+		rebuild = false
+		if is_inside_tree():
+			build()
+
 var _terrain: Terrain
 var _rng := RandomNumberGenerator.new()
 var _placed := 0
@@ -105,11 +134,31 @@ var _colliders := 0
 
 
 func _ready() -> void:
+	build()
+
+
+## Scatters the vegetation. Safe to call repeatedly.
+func build() -> void:
+	for child in get_children():
+		remove_child(child)
+		child.queue_free()
+	_placed = 0
+	_colliders = 0
+
 	var found := get_tree().get_nodes_in_group("terrain")
 	if found.is_empty():
-		push_warning("Forest: no terrain in the scene")
+		# In the editor the terrain may not have built yet on the first pass.
+		var sibling := get_parent().get_node_or_null("Terrain") if get_parent() else null
+		if sibling == null:
+			push_warning("Forest: no terrain in the scene")
+			return
+		_terrain = sibling as Terrain
+	else:
+		_terrain = found[0] as Terrain
+	if _terrain == null:
 		return
-	_terrain = found[0] as Terrain
+	if _terrain.heights.is_empty():
+		_terrain.build()
 	_rng.seed = scatter_seed
 
 	for species in SPECIES:
@@ -196,10 +245,16 @@ func _scatter(species: Dictionary) -> void:
 	mmi.name = String(species["name"])
 	mmi.multimesh = mm
 	mmi.material_override = _make_material(species)
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	# Grass and small plants are not worth shadowing or lighting statically.
-	if not bool(species["collide"]):
-		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+	# Shadows were the single biggest cost in the scene and it was not close.
+	# A shadow-casting instance is re-drawn once per shadow cascade, and shadow
+	# rendering ignores visibility_range entirely, so every full-detail tree on
+	# the whole 400 m map was being drawn three more times whether it was on
+	# screen or not: 12.5 M triangles of geometry becoming 37.5 M of shadow
+	# work every frame. Only the near, full-detail band casts now.
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	if bool(species.get("shadows", false)):
+		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 
 	# Distance culling. Small plants are invisible long before they are far
 	# away, so drawing them at 300 m is pure waste; the fade margin stops them
@@ -213,6 +268,8 @@ func _scatter(species: Dictionary) -> void:
 	# Let Godot skip lighting maths on things too far to matter.
 	mmi.lod_bias = float(species.get("lod_bias", 1.0))
 	add_child(mmi)
+	if Engine.is_editor_hint() and get_tree() != null:
+		mmi.owner = get_tree().edited_scene_root
 	_placed += transforms.size()
 
 	if bool(species["collide"]):
@@ -233,6 +290,8 @@ func _add_colliders(transforms: Array[Transform3D], radius: float,
 	phys.bounce = 0.05
 	body.physics_material_override = phys
 	add_child(body)
+	if Engine.is_editor_hint() and get_tree() != null:
+		body.owner = get_tree().edited_scene_root
 
 	var is_rock := species_name.begins_with("rock")
 	for t in transforms:

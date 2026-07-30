@@ -1,3 +1,4 @@
+@tool
 class_name Terrain
 extends StaticBody3D
 
@@ -127,6 +128,15 @@ void fragment() {
 ## How far beyond [member flat_radius] the ground blends into the hills.
 @export var flat_falloff := 34.0
 
+## Tick this in the editor to rebuild after changing anything above.
+## The terrain is a @tool script, so the map is visible and editable in the
+## editor rather than only existing once the game is running.
+@export var rebuild := false:
+	set(value):
+		rebuild = false
+		if is_inside_tree():
+			build()
+
 var heights := PackedFloat32Array()
 var surfaces := PackedByteArray()
 
@@ -135,8 +145,18 @@ var _half := 0.0
 
 
 func _ready() -> void:
+	build()
+
+
+## Generates the heightfield, collision and mesh. Safe to call repeatedly:
+## the previously generated children are removed first.
+func build() -> void:
 	collision_layer = 1
 	collision_mask = 1
+	for child in get_children():
+		if child.name in ["TerrainCollision", "TerrainMesh"]:
+			remove_child(child)
+			child.queue_free()
 	_generate()
 	_build_collision()
 	_build_mesh()
@@ -308,6 +328,9 @@ func _build_collision() -> void:
 	col.scale = Vector3(_cell, 1.0, _cell)
 	col.name = "TerrainCollision"
 	add_child(col)
+	# Owned by the scene so it is visible and selectable in the editor.
+	if Engine.is_editor_hint() and get_tree() != null:
+		col.owner = get_tree().edited_scene_root
 
 	var phys := PhysicsMaterial.new()
 	phys.friction = 1.0
@@ -359,6 +382,8 @@ func _build_mesh() -> void:
 	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	mesh.gi_mode = GeometryInstance3D.GI_MODE_STATIC
 	add_child(mesh)
+	if Engine.is_editor_hint() and get_tree() != null:
+		mesh.owner = get_tree().edited_scene_root
 
 
 ## Encodes the surface mix into a vertex colour: red = dirt, green = grass,

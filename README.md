@@ -1,4 +1,4 @@
-# CarGame — Stage 2.2
+# CarGame — Stage 2.3
 
 A driving game built in **Godot 4.3**. Third person, rear chase camera, a real
 BMW 1M model, and a vehicle simulation where everything that moves the car comes
@@ -285,11 +285,21 @@ arrived for 3D in 4.4 — so `scripts/smoothing.gd` does it explicitly, using
 `Engine.get_physics_interpolation_fraction()` to blend between the last two
 physics transforms.
 
+## Editing the map
+
+The world is `scenes/world.tscn` — open it and you will see the terrain and the
+forest, not an empty node. `Terrain` and `Forest` are `@tool` scripts, so they
+build in the editor: change `height_scale`, `feature_size`, `noise_seed`,
+`clearing_radius` or any of the scatter counts, tick **rebuild** in the
+inspector, and the map regenerates in front of you. `main.tscn` just instances
+this scene, so you can also drop your own hand-placed props into it.
+
 ## Performance
 
 | | Before | After |
 | --- | --- | --- |
 | Triangles on screen | 6.10 M | 2.79 M |
+| **Shadow work per frame** | **37.5 M** | **6.7 M** |
 | Trees | 2 LOD bands | 3 bands + distance culling |
 | SSIL | on | off (SDFGI already does bounce) |
 | SDFGI cascades | 4, with occlusion and feedback | 3, neither |

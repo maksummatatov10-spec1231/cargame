@@ -276,9 +276,20 @@ def check_common_mistakes():
     check("vehicle does not assign global_transform directly",
           bad is None, "use PhysicsServer3D.body_set_state")
 
-    # @tool scripts run in the editor and can silently rewrite scene data.
-    tools = [n for n, t in src.items() if t.lstrip().startswith("@tool")]
-    check("no gameplay script is marked @tool", not tools, ", ".join(tools))
+    # @tool scripts run in the editor. That is wanted for the world builders -
+    # it is what makes the map visible and editable there - but not for
+    # anything that touches physics state, because the editor would then write
+    # runtime values into the saved scene. wheel.gd did exactly that once.
+    EDITOR_ALLOWED = {"terrain.gd", "forest.gd"}
+    tools = [n for n, t in src.items()
+             if t.lstrip().startswith("@tool") and n not in EDITOR_ALLOWED]
+    check("no physics script is marked @tool", not tools, ", ".join(tools))
+    for name in EDITOR_ALLOWED:
+        if name in src:
+            check("%s builds in the editor" % name,
+                  src[name].lstrip().startswith("@tool"))
+            check("  and can be rebuilt from the inspector",
+                  "rebuild" in src[name] and "func build" in src[name])
 
     # Writing to a SpringArm3D child's transform fights the arm.
     cam = src.get("chase_camera.gd", "")

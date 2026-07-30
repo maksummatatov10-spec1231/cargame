@@ -101,16 +101,18 @@ def test_environment():
     check("colour is saturated enough to read", saturation >= 1.1, "%.2f" % saturation)
 
     for feature, label in (("ssao_enabled", "SSAO (contact shading)"),
-                           ("sdfgi_enabled", "SDFGI (global illumination)"),
-                           ("ssr_enabled", "screen space reflections"),
                            ("glow_enabled", "glow")):
         check("%s is enabled" % label, env.get(feature, False))
-    # SSIL is deliberately off: SDFGI already supplies bounce light, so running
-    # both paid twice for the same effect on a weak GPU.
-    check("SSIL is off (SDFGI already does bounce light)",
-          not env.get("ssil_enabled", False))
-    check("SDFGI is set to a cheap cascade count",
-          env.get("sdfgi_cascades", 8) <= 4, "%s cascades" % env.get("sdfgi_cascades"))
+    # These three are deliberately off. SDFGI reached only a quarter of the map
+    # and re-voxelised constantly while driving; SSIL and SSR duplicated work
+    # for effects that barely show in an outdoor scene.
+    for feature, label in (("ssil_enabled", "SSIL"),
+                           ("sdfgi_enabled", "SDFGI"),
+                           ("ssr_enabled", "screen space reflections")):
+        check("%s is off for performance" % label, not env.get(feature, False))
+    check("sky ambient compensates for the missing GI",
+          env.get("ambient_light_sky_contribution", 0.0) >= 0.5,
+          "%.2f" % env.get("ambient_light_sky_contribution", 0.0))
 
 
 def test_sun():
@@ -270,6 +272,56 @@ def test_clouds():
     check("clouds are in the scene", "SkyClouds" in scene)
 
 
+def test_performance():
+    """Budgets the per-frame cost, especially shadows.
+
+    The scene was unplayable because shadow casting ignores visibility_range
+    and redraws every caster once per cascade. With all 420 trees casting, the
+    12.5 M triangles of vegetation became 37.5 M of shadow work every frame,
+    on top of the visible geometry. That single setting was the lag.
+    """
+    print("\n== performance budget ==")
+    src = open(os.path.join(ROOT, "scripts", "forest.gd")).read()
+    manifest = json.load(open(os.path.join(ROOT, "assets", "forest",
+                                           "forest_manifest.json")))
+    tris = {a["name"]: a["tris"] for a in manifest["assets"]}
+
+    geometry = 0
+    shadow = 0
+    for block in re.finditer(r'\{"name": "(\w+)", "count": (\d+)[^{]*?\},', src, re.S):
+        name, count = block.group(1), int(block.group(2))
+        if name not in tris:
+            continue
+        geometry += tris[name] * count
+        if '"shadows": true' in block.group(0):
+            shadow += tris[name] * count
+
+    scene = open(os.path.join(ROOT, "scenes", "main.tscn")).read()
+    m = re.search(r"directional_shadow_mode = (\d+)", scene)
+    cascades = 4 if (m and m.group(1) == "2") else 1
+    m = re.search(r"directional_shadow_split_3 = ([\d.]+)", scene)
+    cascades = 3 if m else cascades
+
+    print("  vegetation geometry %.2f M tris" % (geometry / 1e6))
+    print("  shadow casters      %.2f M tris  x%d cascades = %.2f M"
+          % (shadow / 1e6, cascades, shadow * cascades / 1e6))
+
+    check("shadow casters are a small share of the vegetation",
+          shadow < geometry * 0.6,
+          "%.0f%% of the forest casts" % (shadow / max(geometry, 1) * 100.0))
+    check("shadow work stays under 10 M triangles",
+          shadow * cascades < 10e6, "%.2f M" % (shadow * cascades / 1e6))
+    check("small plants never cast shadows",
+          all(('"name": "%s"' % n) not in src.split('"shadows": true')[0][-400:]
+              for n in ("grass_tuft",)))
+
+    # Anything that redraws the whole scene must be justified.
+    env = parse_env(open(os.path.join(ROOT, "scenes", "main.tscn")).read())
+    heavy = [k for k in ("sdfgi_enabled", "ssil_enabled", "ssr_enabled",
+                         "volumetric_fog_enabled") if env.get(k, False)]
+    check("no full-scene GI passes are enabled", not heavy, ", ".join(heavy))
+
+
 def test_input():
     print("\n== controls ==")
     text = open(os.path.join(ROOT, "project.godot")).read()
@@ -297,6 +349,7 @@ def main():
     test_effects()
     test_clouds()
     test_smoke()
+    test_performance()
     test_input()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES
                     else "FAILURES: " + ", ".join(FAILURES)))
