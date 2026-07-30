@@ -1,7 +1,6 @@
-[gd_scene load_steps=15 format=3]
+[gd_scene load_steps=14 format=3]
 
-[ext_resource type="PackedScene" path="res://scenes/car.tscn" id="1_car"]
-[ext_resource type="Script" path="res://scripts/world.gd" id="2_world"]
+[ext_resource type="Script" path="res://scripts/game.gd" id="2_world"]
 [ext_resource type="Script" path="res://scripts/chase_camera.gd" id="3_camera"]
 [ext_resource type="Script" path="res://scripts/hud.gd" id="4_hud"]
 [ext_resource type="Script" path="res://scripts/terrain.gd" id="5_terrain"]
@@ -41,27 +40,32 @@ reflected_light_source = 2
 tonemap_mode = 3
 tonemap_exposure = 0.82
 tonemap_white = 8.0
+; SSAO at half resolution looks the same at this scale and costs about a third
+; as much. SSIL is dropped: with SDFGI already providing bounce light it was
+; paying twice for the same effect.
 ssao_enabled = true
-ssao_radius = 1.1
-ssao_intensity = 2.6
+ssao_radius = 1.0
+ssao_intensity = 2.4
 ssao_power = 1.8
-ssao_detail = 0.9
+ssao_detail = 0.6
+ssao_horizon = 0.06
 ssao_light_affect = 0.15
 ssao_ao_channel_affect = 0.4
-ssil_enabled = true
-ssil_radius = 3.5
-ssil_intensity = 0.7
-ssil_sharpness = 0.98
+ssil_enabled = false
+; Reflections fade out quickly, so a shorter march is invisible but cheaper.
 ssr_enabled = true
-ssr_max_steps = 48
+ssr_max_steps = 24
 ssr_fade_in = 0.2
-ssr_fade_out = 6.0
+ssr_fade_out = 4.0
 ssr_depth_tolerance = 0.4
+; SDFGI is the most expensive thing in the scene. Three cascades with a coarser
+; cell still lights the area around the car properly - the far hills get their
+; light from the sky ambient anyway - and no bounce feedback saves another pass.
 sdfgi_enabled = true
-sdfgi_use_occlusion = true
-sdfgi_bounce_feedback = 0.6
-sdfgi_cascades = 4
-sdfgi_min_cell_size = 0.15
+sdfgi_use_occlusion = false
+sdfgi_bounce_feedback = 0.0
+sdfgi_cascades = 3
+sdfgi_min_cell_size = 0.4
 sdfgi_y_scale = 2
 sdfgi_energy = 1.0
 glow_enabled = true
@@ -116,6 +120,8 @@ outline_color = Color(0, 0, 0, 0.7)
 
 [node name="Main" type="Node3D"]
 script = ExtResource("2_world")
+start_vehicle = 0
+spawn_xz = Vector2(0, 8)
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Env")
@@ -148,7 +154,7 @@ directional_shadow_split_2 = 0.13
 directional_shadow_split_3 = 0.4
 directional_shadow_blend_splits = true
 directional_shadow_fade_start = 0.92
-directional_shadow_max_distance = 260.0
+directional_shadow_max_distance = 190.0
 directional_shadow_pancake_size = 25.0
 
 [node name="Fill" type="DirectionalLight3D" parent="."]
@@ -172,13 +178,9 @@ script = ExtResource("6_forest")
 clearing_radius = 30.0
 collision_radius = 170.0
 
-[node name="Car" parent="." instance=ExtResource("1_car")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.68, 12)
-
 [node name="ChaseCamera" type="Node3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.68, 12)
 script = ExtResource("3_camera")
-target_path = NodePath("../Car/CameraTarget")
 
 [node name="SpringArm3D" type="SpringArm3D" parent="ChaseCamera"]
 transform = Transform3D(1, 0, 0, 0, 0.98769, -0.15643, 0, 0.15643, 0.98769, 0, 1.55, 0)
@@ -200,7 +202,6 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 mouse_filter = 2
 script = ExtResource("4_hud")
-vehicle_path = NodePath("../Car")
 
 [node name="Panel" type="Control" parent="HUD"]
 layout_mode = 1

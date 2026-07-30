@@ -198,7 +198,9 @@ func _ready() -> void:
 	# The clouds move, so the radiance has to be refreshed rather than baked
 	# once - otherwise the lighting would not match the sky.
 	sky.process_mode = Sky.PROCESS_MODE_REALTIME
-	sky.radiance_size = Sky.RADIANCE_SIZE_128
+	# A realtime sky only supports 256; anything else is silently overridden
+	# and logs a warning on startup.
+	sky.radiance_size = Sky.RADIANCE_SIZE_256
 
 	env_node.environment.sky = sky
 	env_node.environment.background_mode = Environment.BG_SKY

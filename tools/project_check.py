@@ -174,22 +174,32 @@ def check_scripts():
     print("\n== scripts ==")
     car = open(os.path.join(ROOT, "scenes", "car.tscn")).read()
     car_nodes = set(re.findall(r'\[node name="([^"]+)"', car))
-    for needed in ("Wheels", "Model", "CameraTarget", "LF", "RF", "LR", "RR"):
+    for needed in ("Wheels", "Model", "CameraTarget", "LF", "RF", "LR", "RR",
+                   "Smooth"):
         check("car.tscn has a %s node" % needed, needed in car_nodes)
 
     main = open(os.path.join(ROOT, "scenes", "main.tscn")).read()
-    m = re.search(r'target_path = NodePath\("([^"]+)"\)', main)
-    check("camera target path is set", m is not None, m.group(1) if m else "")
-    m = re.search(r'vehicle_path = NodePath\("([^"]+)"\)', main)
-    check("HUD vehicle path is set", m is not None, m.group(1) if m else "")
+    game = open(os.path.join(ROOT, "scripts", "game.gd")).read()
 
-    # the car must spawn above the ground for the drop
-    m = re.search(r'\[node name="Car"[^\]]*\]\ntransform = Transform3D\(([^)]+)\)', main)
-    if m:
-        vals = [float(v) for v in m.group(1).split(",")]
-        height = vals[10]
-        print("  car spawns at %.2f m" % height)
-        check("car spawns in the air", height > 0.5, "%.2f m" % height)
+    # The vehicle is spawned at runtime now, because the ground is procedural
+    # and a fixed height in the scene file would bury or float the car.
+    check("a game controller spawns the vehicle", "func _spawn" in game)
+    check("the spawn point follows the terrain", "sample_height" in game)
+    check("the camera is retargeted when the vehicle changes",
+          "set_target" in game)
+    check("the HUD is retargeted too", "set_vehicle" in game)
+    check("both vehicles are registered",
+          "car.tscn" in game and "pickup.tscn" in game)
+
+    for scene in ("car.tscn", "pickup.tscn"):
+        path = os.path.join(ROOT, "scenes", scene)
+        check("%s exists" % scene, os.path.exists(path))
+        if os.path.exists(path):
+            text = open(path).read()
+            check("  %s has a smoothing node" % scene, "smoothing.gd" in text)
+            check("  %s has four wheels" % scene,
+                  all(('name="%s"' % c.upper()) in text for c in
+                      ("lf", "rf", "lr", "rr")))
 
 
 def check_common_mistakes():

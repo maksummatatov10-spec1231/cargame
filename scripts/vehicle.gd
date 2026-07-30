@@ -28,6 +28,10 @@ signal gear_changed(gear: int)
 @export var centre_of_mass := Vector3(0.0, 0.46, 0.06)
 ## Share of the car's weight carried by the front axle (BMW 1M is 52/48).
 @export_range(0.3, 0.7) var front_weight_bias := 0.523
+## Width, height and length of the body in metres, used to build the inertia
+## tensor. A pickup is far taller and longer than the coupe, and using the
+## coupe's numbers would make it roll and yaw like a much smaller car.
+@export var body_extents := Vector3(1.80, 1.42, 4.38)
 
 @export_group("Engine")
 ## Peak crankshaft torque in Nm (1M: 450 Nm on overboost).
@@ -66,6 +70,10 @@ signal gear_changed(gear: int)
 @export var clutch_engage_speed := 0.9
 ## 0 = open diff, 1 = fully locked. A limited slip diff sits in between.
 @export_range(0.0, 1.0) var differential_lock := 0.45
+## Drive all four wheels instead of just the rear axle.
+@export var all_wheel_drive := false
+## With AWD, the share of torque sent forward. 0.4 is a typical rear bias.
+@export_range(0.0, 1.0) var front_torque_split := 0.4
 
 @export_group("Brakes")
 ## Peak brake torque at the front axle, Nm.
@@ -165,13 +173,7 @@ func _ready() -> void:
 	linear_damp = 0.0
 	angular_damp = 0.0
 
-	for child in _wheel_root.get_children():
-		if child is RayWheel:
-			_wheels.append(child)
-			if child.is_steering:
-				_front.append(child)
-			else:
-				_rear.append(child)
+	ensure_wheels()
 
 	if _front.size() == 2 and _rear.size() == 2:
 		_wheelbase = absf(_front[0].position.z - _rear[0].position.z)
@@ -198,9 +200,9 @@ func _ready() -> void:
 ## rotational behaviour believable instead of relying on the auto-computed one
 ## from the convex hulls.
 func _apply_inertia_tensor() -> void:
-	var w := 1.80   # width
-	var h := 1.42   # height
-	var l := 4.38   # length
+	var w := body_extents.x
+	var h := body_extents.y
+	var l := body_extents.z
 	var k := mass / 12.0
 	# Slightly reduced yaw inertia, real cars concentrate mass between the axles.
 	inertia = Vector3(
@@ -241,6 +243,11 @@ func _gather_input(delta: float) -> void:
 
 	if Input.is_action_just_pressed("reset_car"):
 		reset_to_spawn()
+
+
+## Sets the point the car returns to on respawn.
+func set_spawn(point: Transform3D) -> void:
+	_spawn_transform = point
 
 
 ## Teleports the car back to where it started.
@@ -425,9 +432,10 @@ func _update_drivetrain(delta: float, forward_speed: float) -> void:
 
 	# Average driven wheel speed feeds back into the engine through the clutch.
 	var driven_spin := 0.0
-	for w in _rear:
+	var feedback := _driven()
+	for w in feedback:
 		driven_spin += w.spin
-	driven_spin /= maxf(_rear.size(), 1)
+	driven_spin /= maxf(feedback.size(), 1)
 
 	var idle_speed := idle_rpm * TAU / 60.0
 	if absf(ratio) > 0.01 and clutch > 0.99:
@@ -542,14 +550,15 @@ func _auto_shift() -> void:
 ## where they make the most grip, without tipping into a slide. On top of that
 ## a reactive term trims the torque if slip still creeps up (bumps, kerbs).
 func _traction_control_factor(ratio: float) -> float:
-	if traction_control <= 0.0 or _rear.is_empty():
+	var driven_wheels := _driven()
+	if traction_control <= 0.0 or driven_wheels.is_empty():
 		return 1.0
 
 	var delta := get_physics_process_delta_time()
 
 	# --- reactive part: catch slip that got through anyway --------------- #
 	var worst := 0.0
-	for w in _rear:
+	for w in driven_wheels:
 		if w.grounded:
 			worst = maxf(worst, w.slip_ratio)
 	if worst <= traction_target_slip:
@@ -568,7 +577,7 @@ func _traction_control_factor(ratio: float) -> float:
 		# swap ends.
 		var weakest := INF
 		var driven := 0
-		for w in _rear:
+		for w in driven_wheels:
 			if w.grounded:
 				weakest = minf(weakest, w.grip_limit_force())
 				driven += 1
@@ -581,13 +590,13 @@ func _traction_control_factor(ratio: float) -> float:
 			# left for driving out. This is the term that actually tames
 			# power-on oversteer instead of waiting for the slide to start.
 			var lateral_use := 0.0
-			for w in _rear:
+			for w in driven_wheels:
 				lateral_use = maxf(lateral_use,
 					absf(w.slip_angle) / deg_to_rad(maxf(w.peak_slip_angle_deg, 1.0)))
 			var remaining := sqrt(maxf(0.0, 1.0 - minf(lateral_use, 1.0) ** 2))
 			capacity *= lerpf(1.0, maxf(remaining, 0.25), traction_control)
 
-			var allowed := capacity * traction_headroom * _rear[0].tyre_radius \
+			var allowed := capacity * traction_headroom * driven_wheels[0].tyre_radius \
 				/ (absf(ratio) * drivetrain_efficiency)
 			var demand := engine_torque_at(engine_rpm) \
 				* (1.0 + (boost_multiplier - 1.0) * boost)
@@ -646,11 +655,32 @@ func _distribute_drive(axle_torque: float) -> void:
 	var reflected := engine_inertia * ratio * ratio * drivetrain_efficiency
 	for w in _wheels:
 		w.driveline_inertia = 0.0
-	for w in _rear:
-		w.driveline_inertia = reflected * clutch / maxf(_rear.size(), 1)
+	var driven_wheels := _driven()
+	for w in driven_wheels:
+		w.driveline_inertia = reflected * clutch / maxf(driven_wheels.size(), 1)
 
-	var left := _rear[0]
-	var right := _rear[1] if _rear.size() > 1 else _rear[0]
+	# Four wheel drive splits the torque between the axles first.
+	if all_wheel_drive and _front.size() == 2:
+		_split_axle(_front, axle_torque * front_torque_split)
+		_split_axle(_rear, axle_torque * (1.0 - front_torque_split))
+		return
+
+	_split_axle(_rear, axle_torque)
+
+
+## Wheels that currently receive engine torque.
+func _driven() -> Array[RayWheel]:
+	if all_wheel_drive:
+		return _wheels
+	return _rear
+
+
+## Shares an axle's torque between its two wheels through the differential.
+func _split_axle(axle: Array[RayWheel], axle_torque: float) -> void:
+	if axle.is_empty():
+		return
+	var left := axle[0]
+	var right := axle[1] if axle.size() > 1 else axle[0]
 	var half := axle_torque * 0.5
 
 	var diff_spin := left.spin - right.spin
@@ -712,5 +742,31 @@ func _update_telemetry() -> void:
 	wheel_slip = worst
 
 
+## Collects the wheel nodes. Safe to call repeatedly and safe to call before
+## this node's own _ready().
+##
+## Godot readies children before their parent, so TyreMarks, GroundParticles
+## and ExhaustSmoke all ran their _ready() while _wheels was still empty. They
+## built zero emitters, then indexed into those empty arrays on the first
+## physics frame - "Out of bounds get index '0' (on base: 'Array')", in two
+## places at once. Any child that needs the wheels calls this first.
+func ensure_wheels() -> void:
+	if not _wheels.is_empty():
+		return
+	var root := _wheel_root
+	if root == null:
+		root = get_node_or_null("Wheels") as Node3D
+	if root == null:
+		return
+	for child in root.get_children():
+		if child is RayWheel:
+			_wheels.append(child)
+			if child.is_steering:
+				_front.append(child)
+			else:
+				_rear.append(child)
+
+
 func get_wheels() -> Array[RayWheel]:
+	ensure_wheels()
 	return _wheels

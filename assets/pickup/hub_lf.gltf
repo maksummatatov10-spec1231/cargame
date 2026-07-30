@@ -1,0 +1,120 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "cargame pickup_to_gltf.py"
+ },
+ "scene": 0,
+ "scenes": [
+  {
+   "nodes": [
+    0
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "hub_lf",
+   "mesh": 0
+  }
+ ],
+ "meshes": [
+  {
+   "name": "hub_lf",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2
+     },
+     "indices": 3,
+     "material": 0
+    }
+   ]
+  }
+ ],
+ "materials": [
+  {
+   "name": "hub_lf_mat",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.42,
+     0.44,
+     0.48,
+     1.0
+    ],
+    "metallicFactor": 0.45,
+    "roughnessFactor": 0.35
+   },
+   "doubleSided": false
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 3505,
+   "type": "VEC3",
+   "min": [
+    -0.018739127591308746,
+    -0.17013328998136876,
+    -0.2714486914873122
+   ],
+   "max": [
+    0.7800402555064879,
+    0.9508533448193509,
+    0.2595445466041566
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5126,
+   "count": 3505,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5126,
+   "count": 3505,
+   "type": "VEC2"
+  },
+  {
+   "bufferView": 3,
+   "componentType": 5123,
+   "count": 24459,
+   "type": "SCALAR"
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 42060,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 42060,
+   "byteLength": 42060,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 84120,
+   "byteLength": 28040,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 112160,
+   "byteLength": 48918,
+   "target": 34963
+  }
+ ],
+ "buffers": [
+  {
+   "uri": "hub_lf.bin",
+   "byteLength": 161078
+  }
+ ]
+}

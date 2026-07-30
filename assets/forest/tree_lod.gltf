@@ -53,11 +53,11 @@
   {
    "bufferView": 0,
    "componentType": 5126,
-   "count": 2109,
+   "count": 2241,
    "type": "VEC3",
    "min": [
     -1.6137738227844238,
-    -1.610613686864326e-08,
+    -1.6102628563885446e-08,
     -1.473434180021286
    ],
    "max": [
@@ -69,19 +69,19 @@
   {
    "bufferView": 1,
    "componentType": 5126,
-   "count": 2109,
+   "count": 2241,
    "type": "VEC3"
   },
   {
    "bufferView": 2,
    "componentType": 5126,
-   "count": 2109,
+   "count": 2241,
    "type": "VEC2"
   },
   {
    "bufferView": 3,
    "componentType": 5123,
-   "count": 10101,
+   "count": 10821,
    "type": "SCALAR"
   }
  ],
@@ -89,32 +89,32 @@
   {
    "buffer": 0,
    "byteOffset": 0,
-   "byteLength": 25308,
+   "byteLength": 26892,
    "target": 34962
   },
   {
    "buffer": 0,
-   "byteOffset": 25308,
-   "byteLength": 25308,
+   "byteOffset": 26892,
+   "byteLength": 26892,
    "target": 34962
   },
   {
    "buffer": 0,
-   "byteOffset": 50616,
-   "byteLength": 16872,
+   "byteOffset": 53784,
+   "byteLength": 17928,
    "target": 34962
   },
   {
    "buffer": 0,
-   "byteOffset": 67488,
-   "byteLength": 20202,
+   "byteOffset": 71712,
+   "byteLength": 21642,
    "target": 34963
   }
  ],
  "buffers": [
   {
    "uri": "tree_lod.bin",
-   "byteLength": 87690
+   "byteLength": 93354
   }
  ]
 }

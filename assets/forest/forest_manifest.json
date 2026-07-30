@@ -65,6 +65,18 @@
    "verts": 11046,
    "tris": 8256,
    "height": 0.9028557231649756
+  },
+  {
+   "name": "tree_lod",
+   "verts": 2200,
+   "tris": 3607,
+   "height": 6.87
+  },
+  {
+   "name": "tree_far",
+   "verts": 900,
+   "tris": 1281,
+   "height": 6.87
   }
  ]
 }

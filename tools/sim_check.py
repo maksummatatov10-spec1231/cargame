@@ -904,6 +904,100 @@ def test_surfaces():
           and results["dirt"][0] < 12.0)
 
 
+PICKUP = {
+    "mass": 2450.0, "front_weight": 0.56, "travel": 0.24, "ride_drop": 0.129,
+    "com": (0.0, 0.72, -0.074), "extents": (2.05, 2.00, 5.50),
+}
+
+
+def build_pickup(height):
+    """Mirrors the pickup preset in tools/build_car_scene.py."""
+    meta = json.load(open(os.path.join(ASSET, "..", "pickup", "pickup_meta.json")))
+    wp = meta["wheel_positions"]
+    m = PICKUP["mass"]
+    fw = PICKUP["front_weight"]
+    travel = PICKUP["travel"]
+    drop = PICKUP["ride_drop"]
+
+    car = Car.__new__(Car)
+    w, h, l = PICKUP["extents"]
+    k = m / 12.0
+    car.com = PICKUP["com"]
+    car.body = Body(m, (k * (h * h + l * l), k * (w * w + l * l) * 0.86,
+                        k * (w * w + h * h)), (0.0, height, 0.0))
+    car.wheels = []
+    for corner in ("lf", "rf", "lr", "rr"):
+        p = wp[corner]
+        front = corner.endswith("f")
+        cm = m * (fw if front else 1.0 - fw) * 0.5
+        cfg = {
+            "radius": 0.470, "wheel_mass": 34.0 if front else 36.0,
+            "spring_length": travel,
+            "spring_rate": 49000.0 if front else 44000.0,
+            "bump": 4200.0 if front else 3800.0,
+            "rebound": 7100.0 if front else 6400.0,
+            "anti_roll": 9000.0 if front else 5000.0,
+            "mu": 1.28 if front else 1.30,
+            "peak_sa_deg": 10.5 if front else 11.0,
+            "nominal_load": cm * 9.81, "camber": -0.5, "supported_mass": cm,
+        }
+        mount = (p[0] - car.com[0], p[1] + travel - drop - car.com[1],
+                 p[2] - car.com[2])
+        car.wheels.append(Wheel(corner, mount, front, cfg))
+    car.gear = 1
+    car.engine_speed = 700.0 * math.tau / 60.0
+    car.throttle = 0.0
+    car.brake = 0.0
+    car.steer_input = 0.0
+    car.shift_timer = 0.0
+    car.tc_cut = 0.0
+    car.traction_control = 0.85
+    car.traction_target_slip = 0.16
+    car.stability_control = 0.6
+    car.stability_deadband = 0.18
+    car.traction_headroom = 1.15
+    return car
+
+
+def test_pickup():
+    print("\n== pickup: heavier, taller, softer ==")
+    car = build_pickup(0.9)
+    heights = []
+    touchdown = None
+    peak = 0.0
+    for i in range(120 * 10):
+        car.step()
+        heights.append(car.origin_height())
+        peak = max(peak, sum(w.spring_force for w in car.wheels))
+        if touchdown is None and any(w.grounded for w in car.wheels):
+            touchdown = i
+
+    settle = heights[-1]
+    lowest = min(heights[touchdown:])
+    static = PICKUP["mass"] * G
+    total = sum(w.spring_force for w in car.wheels)
+    front = next(w for w in car.wheels if w.name == "lf").spring_force
+
+    print("  squat %.3f m, settled %.4f m, peak %.2f g"
+          % (settle - lowest, settle, peak / static))
+    print("  load %.0f N vs %.0f N static, %.1f%% on the front axle"
+          % (total, static, front * 2.0 / total * 100.0))
+
+    check("pickup settles on its springs", abs(car.body.vel[1]) < 0.05)
+    check("pickup sits at the right ride height", -0.02 < settle < 0.05,
+          "%.4f m" % settle)
+    check("pickup carries its own weight", abs(total - static) / static < 0.03)
+    check("weight distribution is nose heavy",
+          0.52 < front * 2.0 / total < 0.60,
+          "%.1f%% front" % (front * 2.0 / total * 100.0))
+    # A pickup should be softer than the coupe: more travel used at rest.
+    print("  static sag %.3f m of %.2f m travel"
+          % (car.wheels[0].travel, PICKUP["travel"]))
+    check("suspension is soft and long travel",
+          0.09 < car.wheels[0].travel < 0.19,
+          "%.3f m" % car.wheels[0].travel)
+
+
 def test_cornering():
     print("\n== steady state cornering ==")
     car = Car(REST_HEIGHT)
@@ -954,6 +1048,7 @@ def main():
     test_smoothness()
     test_reverse_latch()
     test_surfaces()
+    test_pickup()
     test_acceleration()
     test_braking()
     test_cornering()

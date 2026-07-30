@@ -116,3 +116,85 @@ brings the whole scene from 13.8 M to **6.0 M triangles**.
 
 Vegetation is drawn with one `MultiMeshInstance3D` per species, so all 4 540
 plants and rocks cost **11 draw calls**, not 4 540.
+
+---
+
+# The GHammer pickup
+
+`Okhey+GHammer+-+pickup+(FBX+File).7z` — a single 29 MB FBX inside a 7-Zip
+archive.
+
+## Animation
+
+**None.** No `AnimationCurve`, `AnimationLayer`, `AnimationStack`, `Deformer`,
+`Pose` or non-empty `Takes` block — the same result as every other uploaded
+asset. It is static geometry, so the wheels are animated by the physics exactly
+as the BMW's are: spin integrated from drive, brake and contact-patch torque,
+steering applied to the raycast the wheel hangs off.
+
+## What is in it
+
+| | |
+| --- | --- |
+| Format | FBX 7400, 29.4 MB |
+| Meshes | 52 |
+| Vertices | 775 983 |
+| Polygons | 490 468 |
+| Materials | 40+ (`Wheel_BRC`, `Paint_base`, `Spring`, `LGT_*`, …) |
+
+Node names are generic (`Plane.*`, `Plano.*`, `Cilindro.*`), so the parts were
+identified geometrically rather than by name:
+
+* node scale is **−100** with a 90° X rotation, so the file is in centimetres,
+  Z-up, and mirrored — the negative scale also flips triangle winding, which
+  has to be undone or the whole model renders inside out
+* the model lies along **X**, so it is rotated 90° about Y to face Godot's −Z
+* `Plano.001/003/005/007` are the tyres, `.002/004/006/008` the rims,
+  radius 47 cm
+* `Cilindro.017/072/140/222` are the suspension springs, kept with the hubs
+* the lowest point is 6.5 cm below the origin, so everything is lifted to put
+  the contact patch exactly on y = 0
+
+## Measured dimensions
+
+| | |
+| --- | --- |
+| Length | 5.50 m |
+| Width | 2.23 m |
+| Height | 2.14 m |
+| Wheelbase | 3.130 m |
+| Track | 1.681 m |
+| Tyre radius | 0.470 m |
+
+Realistic for a full-size pickup (an F-150 is 5.3 × 2.0 × 1.9 m).
+
+## Decimation
+
+490 k polygons is roughly five times a modern game car. Grid clustering brings
+it down without a visible change at driving distances:
+
+| Part | Cell | Tris |
+| --- | --- | --- |
+| body | 30 mm | 91 824 |
+| wheel ×4 | 12 mm | 16 501 each |
+| hub ×4 | 20 mm | ~8 200 each |
+| **total** | | **190 644** (from 490 468) |
+
+The wheels get a finer cell than the body because they are round, spinning and
+close to the camera, where faceting shows immediately.
+
+## Physics
+
+Derived from the measured geometry rather than guessed:
+
+* 2 450 kg, 56% on the front axle — and the centre of mass is placed to
+  *match* that split (z = −0.074, which is 0.44 of the wheelbase behind the
+  front axle). Getting this wrong made the springs carry 50/50 while the rest
+  of the model assumed 56/44.
+* springs sized for 1.35 Hz front / 1.44 Hz rear, which is pickup territory
+  and much softer than the BMW's 1.85 Hz
+* 240 mm travel, static sag 137 mm
+* all-wheel drive with a 40/60 front/rear split and a 0.75 locking diff
+* 620 Nm at 2 100 rpm, 5 200 rpm redline, shorter gearing
+* off-road tread: peak grip 1.30 versus the BMW's 1.58, but a wider slip angle
+  before it lets go

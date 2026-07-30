@@ -236,6 +236,125 @@ def check_calls(sources, all_sigs):
                                pname, ptype, actual, arg))
 
 
+# Properties and methods on common Godot base classes that a local variable or
+# parameter must not shadow. Godot reports these as SHADOWED_VARIABLE_BASE_CLASS
+# and they are easy to introduce by accident.
+BASE_CLASS_MEMBERS = {
+    "Node": ["name", "owner", "scene_file_path", "process_mode", "multiplayer"],
+    "Node3D": ["basis", "scale", "position", "rotation", "transform", "quaternion",
+               "global_position", "global_rotation", "global_transform", "visible",
+               "top_level"],
+    "CanvasItem": ["material", "modulate", "visible", "z_index"],
+    "Control": ["size", "anchor_left", "theme", "tooltip_text"],
+    "RigidBody3D": ["mass", "inertia", "linear_velocity", "angular_velocity",
+                    "gravity_scale", "center_of_mass", "freeze"],
+    "RayCast3D": ["enabled", "target_position", "collision_mask", "exclude_parent"],
+}
+
+# Global functions that a variable must not shadow (SHADOWED_GLOBAL_IDENTIFIER).
+GLOBAL_FUNCTIONS = {
+    "load", "preload", "print", "range", "min", "max", "abs", "sign", "clamp",
+    "lerp", "str", "int", "float", "bool", "type_of", "instance_from_id",
+    "hash", "len", "assert", "char", "ord", "round", "floor", "ceil", "pow",
+    "sqrt", "sin", "cos", "tan", "log", "exp", "randi", "randf", "seed",
+}
+
+
+def check_unguarded_indexing(sources):
+    """Flags [0] / [1] indexing that is not guarded anywhere in its function.
+
+    This is the class of bug behind "Out of bounds get index '0'": a child node
+    readying before its parent saw an empty array and indexed straight into it.
+    The whole enclosing function is searched for a guard, because the check and
+    the access are often far apart.
+    """
+    for path, text in sources.items():
+        lines = text.splitlines()
+
+        # Map each line to the body of the function it belongs to.
+        starts = [i for i, l in enumerate(lines)
+                  if re.match(r"\s*(?:static\s+)?func\s+\w+", l)]
+        starts.append(len(lines))
+
+        for fi in range(len(starts) - 1):
+            body = lines[starts[fi]:starts[fi + 1]]
+            joined = "\n".join(l.split("#")[0] for l in body)
+            for offset, raw in enumerate(body):
+                line = raw.split("#")[0]
+                for m in re.finditer(r"\b(_?\w+)\[([0-9])\]", line):
+                    name, idx = m.group(1), m.group(2)
+                    if name in ("arrays", "params", "argv"):
+                        continue
+                    guarded = (
+                        ("%s.is_empty()" % name) in joined
+                        or ("%s.size()" % name) in joined
+                        or ("not %s" % name) in joined
+                        or ("in %s" % name) in joined
+                        or ("%s ==" % name) in joined
+                        or re.search(r"%s\s*=\s*\[" % re.escape(name), joined)
+                    )
+                    if not guarded:
+                        PROBLEMS.append(
+                            "%s:%d: %s[%s] is not guarded against an empty array"
+                            % (os.path.basename(path),
+                               starts[fi] + offset + 1, name, idx))
+
+
+def check_shadowing(sources):
+    """Finds locals and parameters that shadow a base class member or a global."""
+    for path, text in sources.items():
+        base = None
+        m = re.search(r"^extends\s+(\w+)", text, re.M)
+        if m:
+            base = m.group(1)
+        # Walk up the small hierarchy we care about.
+        chain = []
+        seen_base = base
+        order = ["RayCast3D", "RigidBody3D", "Control", "CanvasItem", "Node3D", "Node"]
+        for cls in order:
+            if seen_base == cls or (seen_base and cls in ("Node3D", "Node")):
+                chain.append(cls)
+        if seen_base in BASE_CLASS_MEMBERS and seen_base not in chain:
+            chain.append(seen_base)
+
+        forbidden = set()
+        for cls in chain:
+            forbidden.update(BASE_CLASS_MEMBERS.get(cls, []))
+
+        lines = text.splitlines()
+        for i, raw in enumerate(lines, 1):
+            line = raw.split("#")[0]
+
+            # local variable declarations
+            for m in re.finditer(r"\bvar\s+(\w+)\s*[:=]", line):
+                nm = m.group(1)
+                if not line.lstrip().startswith("var"):
+                    continue          # a class-level var is allowed to be named freely
+                if nm in forbidden:
+                    PROBLEMS.append("%s:%d: local variable \"%s\" shadows %s.%s"
+                                    % (os.path.basename(path), i, nm, base, nm))
+                if nm in GLOBAL_FUNCTIONS:
+                    PROBLEMS.append("%s:%d: variable \"%s\" shadows the built-in "
+                                    "function %s()"
+                                    % (os.path.basename(path), i, nm, nm))
+
+            # function parameters
+            fm = re.match(r"\s*(?:static\s+)?func\s+\w+\s*\((.*)", line)
+            if fm:
+                params = fm.group(1).split(")")[0]
+                for p in split_args(params):
+                    nm = p.split(":")[0].split("=")[0].strip()
+                    if not nm:
+                        continue
+                    if nm in forbidden:
+                        PROBLEMS.append("%s:%d: parameter \"%s\" shadows %s.%s"
+                                        % (os.path.basename(path), i, nm, base, nm))
+                    if nm in GLOBAL_FUNCTIONS:
+                        PROBLEMS.append("%s:%d: parameter \"%s\" shadows the "
+                                        "built-in function %s()"
+                                        % (os.path.basename(path), i, nm, nm))
+
+
 def main():
     scripts = os.path.join(ROOT, "scripts")
     sources = {}
@@ -248,6 +367,8 @@ def main():
     print("GDScript call type check")
     print("  %d scripts, %d typed functions" % (len(sources), total))
     check_calls(sources, sigs)
+    check_shadowing(sources)
+    check_unguarded_indexing(sources)
 
     if PROBLEMS:
         print("\n%d problem(s) found:" % len(PROBLEMS))

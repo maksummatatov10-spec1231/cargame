@@ -52,9 +52,10 @@ func _ready() -> void:
 	_instance.extra_cull_margin = 200.0
 	add_child(_instance)
 
-	for _w in _vehicle.get_wheels():
-		_ribbons.append([])
-		_last_point.append(Vector3.INF)
+	# The vehicle readies after its children, so ask it to collect the wheels
+	# before sizing the per-wheel arrays.
+	_vehicle.ensure_wheels()
+	_resize_to_wheels()
 
 
 func _make_material() -> StandardMaterial3D:
@@ -77,14 +78,27 @@ func _physics_process(delta: float) -> void:
 		return
 
 	var wheels := _vehicle.get_wheels()
+	if wheels.size() != _ribbons.size():
+		_resize_to_wheels()
 	for i in wheels.size():
-		var wheel := wheels[i]
-		_update_ribbon(i, wheel, delta)
+		_update_ribbon(i, wheels[i], delta)
 
 	_rebuild()
 
 
+## Keeps the per-wheel state arrays the same length as the wheel list.
+func _resize_to_wheels() -> void:
+	var count := _vehicle.get_wheels().size()
+	_ribbons.clear()
+	_last_point.clear()
+	for _i in count:
+		_ribbons.append([])
+		_last_point.append(Vector3.INF)
+
+
 func _update_ribbon(index: int, wheel: RayWheel, delta: float) -> void:
+	if index >= _ribbons.size():
+		return
 	var ribbon: Array = _ribbons[index]
 
 	# Age everything and drop what has faded.

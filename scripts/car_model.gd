@@ -63,7 +63,7 @@ func _collect(node: Node) -> void:
 ## Moves the wheel and hub meshes under the matching [RayWheel] so the
 ## suspension travel and the wheel spin drive them directly.
 func _reparent_parts() -> void:
-	var vehicle := get_parent()
+	var vehicle := _find_vehicle()
 	if vehicle == null:
 		return
 	var wheels_root := vehicle.get_node_or_null("Wheels")
@@ -110,3 +110,14 @@ func set_steering(normalised: float, delta: float) -> void:
 		return
 	_steer_angle = lerpf(_steer_angle, normalised, clampf(delta * 12.0, 0.0, 1.0))
 	steering_part.rotation.z = deg_to_rad(steering_wheel_ratio * 0.5) * _steer_angle
+
+
+## Walks up the tree to the Vehicle. The model now sits under a smoothing node,
+## so the vehicle is a grandparent rather than the direct parent.
+func _find_vehicle() -> Vehicle:
+	var node := get_parent()
+	while node != null:
+		if node is Vehicle:
+			return node
+		node = node.get_parent()
+	return null

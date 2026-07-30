@@ -1,0 +1,120 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "cargame pickup_to_gltf.py"
+ },
+ "scene": 0,
+ "scenes": [
+  {
+   "nodes": [
+    0
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "wheel_rr",
+   "mesh": 0
+  }
+ ],
+ "meshes": [
+  {
+   "name": "wheel_rr",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2
+     },
+     "indices": 3,
+     "material": 0
+    }
+   ]
+  }
+ ],
+ "materials": [
+  {
+   "name": "wheel_rr_mat",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.07,
+     0.07,
+     0.075,
+     1.0
+    ],
+    "metallicFactor": 0.0,
+    "roughnessFactor": 0.9
+   },
+   "doubleSided": false
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 8074,
+   "type": "VEC3",
+   "min": [
+    -0.21897307128148355,
+    -0.4695706963539451,
+    -0.46993252635015703
+   ],
+   "max": [
+    0.2189730712814837,
+    0.469570696353945,
+    0.4699325263501568
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5126,
+   "count": 8074,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5126,
+   "count": 8074,
+   "type": "VEC2"
+  },
+  {
+   "bufferView": 3,
+   "componentType": 5123,
+   "count": 49503,
+   "type": "SCALAR"
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 96888,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 96888,
+   "byteLength": 96888,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 193776,
+   "byteLength": 64592,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 258368,
+   "byteLength": 99006,
+   "target": 34963
+  }
+ ],
+ "buffers": [
+  {
+   "uri": "wheel_rr.bin",
+   "byteLength": 357374
+  }
+ ]
+}

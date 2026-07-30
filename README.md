@@ -1,4 +1,4 @@
-# CarGame — Stage 2
+# CarGame — Stage 2.1
 
 A driving game built in **Godot 4.3**. Third person, rear chase camera, a real
 BMW 1M model, and a vehicle simulation where everything that moves the car comes
@@ -29,6 +29,7 @@ around.
 | `W` / `↑` | throttle |
 | `Shift` | turbo — extra boost while the throttle is open |
 | `S` (held at a standstill, after releasing it) | select reverse |
+| `V` | swap between the BMW and the pickup |
 | `S` / `↓` | brake (hold at a standstill to select reverse) |
 | `A` `D` / `←` `→` | steer |
 | `Space` | handbrake |
@@ -248,6 +249,57 @@ literals, constructors, numeric built-ins and locally declared variables, and
 catches all three of those call sites.
 
 ---
+
+## Two vehicles
+
+| | BMW 1M | GHammer pickup |
+| --- | --- | --- |
+| Mass | 1 495 kg | 2 450 kg |
+| Drive | rear | all four, 40/60 split |
+| Wheelbase | 2.63 m | 3.13 m |
+| Tyre radius | 0.33 m | 0.47 m |
+| Suspension travel | 160 mm | 240 mm |
+| Ride frequency | 1.85 Hz | 1.35 Hz |
+| Peak grip | 1.58 | 1.30 (off-road tread) |
+| 0–100 | 4.92 s | slower, but it climbs |
+
+Press `V` to swap. The vehicle is spawned by `scripts/game.gd` onto the terrain
+surface rather than being placed at a fixed height in the scene, because the
+ground is procedural — a hardcoded height would bury or float the car.
+
+## Smoothness
+
+Physics runs at a fixed 120 Hz; the display does not. Without interpolation
+some frames show a transform one tick old and others two, which reads as a
+judder even though the simulation is perfectly smooth. Measured at 30 m/s
+against a 75 Hz display:
+
+```
+raw            mean step 0.4003 m, max error 0.1500 m, stdev 0.12242
+interpolated   mean step 0.4000 m, max error 0.0000 m, stdev 0.00000
+```
+
+Godot 4.3 only implements physics interpolation for 2D — checked against the
+engine source, `scene/3d/node_3d.cpp` contains no interpolation code and it
+arrived for 3D in 4.4 — so `scripts/smoothing.gd` does it explicitly, using
+`Engine.get_physics_interpolation_fraction()` to blend between the last two
+physics transforms.
+
+## Performance
+
+| | Before | After |
+| --- | --- | --- |
+| Triangles on screen | 6.10 M | 2.79 M |
+| Trees | 2 LOD bands | 3 bands + distance culling |
+| SSIL | on | off (SDFGI already does bounce) |
+| SDFGI cascades | 4, with occlusion and feedback | 3, neither |
+| Shadow map | 8192 | 4096 |
+| MSAA | 4x | 2x |
+
+The vegetation is still one `MultiMeshInstance3D` per species, so all 4 660
+plants and rocks are 12 draw calls. On top of that each species now has a
+`visibility_range_end` — grass at 55 m, bushes at 70 m, trees at 180–380 m —
+with a fade margin so nothing pops.
 
 ## The world
 

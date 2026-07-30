@@ -15,19 +15,25 @@ var _show_debug := false
 @onready var _debug : Label = $Debug
 
 
+## Points the readout at a different vehicle, used when they are swapped.
+func set_vehicle(v: Vehicle) -> void:
+	_vehicle = v
+
+
 func _ready() -> void:
-	_vehicle = get_node_or_null(vehicle_path) as Vehicle
+	if vehicle_path:
+		_vehicle = get_node_or_null(vehicle_path) as Vehicle
 	_debug.visible = false
 	_hint.text = "W / S  throttle & brake      A / D  steer      Shift  TURBO" \
 		+ "      Space  handbrake" \
-		+ "\nC  camera      R  respawn      ~  telemetry"
+		+ "\nV  swap vehicle      C  camera      R  respawn      ~  telemetry"
 
 
 func _process(_delta: float) -> void:
 	if Input.is_action_just_pressed("toggle_debug"):
 		_show_debug = not _show_debug
 		_debug.visible = _show_debug
-	if _vehicle == null:
+	if _vehicle == null or not is_instance_valid(_vehicle):
 		return
 
 	_speed.text = "%3d km/h" % roundi(_vehicle.speed_kmh)

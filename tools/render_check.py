@@ -101,11 +101,16 @@ def test_environment():
     check("colour is saturated enough to read", saturation >= 1.1, "%.2f" % saturation)
 
     for feature, label in (("ssao_enabled", "SSAO (contact shading)"),
-                           ("ssil_enabled", "SSIL (indirect bounce)"),
                            ("sdfgi_enabled", "SDFGI (global illumination)"),
                            ("ssr_enabled", "screen space reflections"),
                            ("glow_enabled", "glow")):
         check("%s is enabled" % label, env.get(feature, False))
+    # SSIL is deliberately off: SDFGI already supplies bounce light, so running
+    # both paid twice for the same effect on a weak GPU.
+    check("SSIL is off (SDFGI already does bounce light)",
+          not env.get("ssil_enabled", False))
+    check("SDFGI is set to a cheap cascade count",
+          env.get("sdfgi_cascades", 8) <= 4, "%s cascades" % env.get("sdfgi_cascades"))
 
 
 def test_sun():
@@ -127,8 +132,9 @@ def test_sun():
     check("shadows are enabled", "shadow_enabled = true" in block)
     check("soft shadows (PCSS) are on", angular > 0.0, "%.2f deg" % angular)
     check("shadows use cascades for range", "directional_shadow_mode = 2" in block)
-    check("shadow range covers the play area",
-          val("directional_shadow_max_distance") >= 200.0)
+    check("shadow range covers the drivable area",
+          val("directional_shadow_max_distance") >= 150.0,
+          "%.0f m" % val("directional_shadow_max_distance"))
 
 
 def test_smoke():

@@ -63,8 +63,12 @@ func _ready() -> void:
 
 	if target_path:
 		_target = get_node_or_null(target_path)
+	# The game spawns the vehicle at runtime and calls set_target(); having no
+	# target at _ready() is normal, not an error.
 	if _target == null:
-		push_warning("ChaseCamera: target_path does not point at a node")
+		arm.collision_mask = 1
+		arm.margin = 0.35
+		camera.transform = Transform3D.IDENTITY
 		return
 
 	_vehicle = _target as Vehicle
@@ -104,6 +108,19 @@ func _collect_bodies(node: Node) -> Array[CollisionObject3D]:
 
 ## Places the rig behind the car immediately, so the first frame is already
 ## framed correctly instead of flying in from the world origin.
+## Points the rig at a different node, used when the vehicle is swapped.
+func set_target(node: Node3D) -> void:
+	_target = node
+	if _target == null:
+		return
+	_vehicle = _target as Vehicle
+	if _vehicle == null:
+		_vehicle = _target.get_parent() as Vehicle
+	arm.clear_excluded_objects()
+	_exclude_vehicle_bodies()
+	_snap_behind_target()
+
+
 func _snap_behind_target() -> void:
 	_yaw = _target.global_rotation.y
 	_orbit = _yaw
@@ -116,7 +133,7 @@ func _snap_behind_target() -> void:
 
 
 func _physics_process(delta: float) -> void:
-	if _target == null:
+	if _target == null or not is_instance_valid(_target):
 		return
 
 	if Input.is_action_just_pressed("toggle_camera"):

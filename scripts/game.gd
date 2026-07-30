@@ -1,0 +1,84 @@
+class_name Game
+extends Node3D
+
+## Top level controller: spawns the chosen vehicle on the terrain and lets you
+## swap between them.
+##
+## The car is no longer placed in the scene file at a fixed height. The ground
+## is procedural now, so the spawn point is queried from the terrain and the
+## vehicle is dropped a short way above whatever is actually there.
+
+const VEHICLES := [
+	{"name": "BMW 1M", "scene": "res://scenes/car.tscn", "drop": 0.55},
+	{"name": "GHammer pickup", "scene": "res://scenes/pickup.tscn", "drop": 0.6},
+]
+
+## Which vehicle to start in.
+@export_range(0, 1) var start_vehicle := 0
+## Where on the terrain to spawn, in metres.
+@export var spawn_xz := Vector2(0.0, 8.0)
+
+var current_index := 0
+var vehicle: Vehicle
+
+var _terrain: Terrain
+var _camera: ChaseCamera
+var _hud: Control
+
+
+func _ready() -> void:
+	var found := get_tree().get_nodes_in_group("terrain")
+	if not found.is_empty():
+		_terrain = found[0] as Terrain
+	_camera = get_node_or_null("ChaseCamera") as ChaseCamera
+	_hud = get_node_or_null("HUD") as Control
+
+	current_index = start_vehicle
+	_spawn(current_index)
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("switch_vehicle"):
+		_spawn((current_index + 1) % VEHICLES.size())
+
+
+## Replaces the current vehicle with another, keeping the camera and HUD
+## pointed at whatever is now being driven.
+func _spawn(index: int) -> void:
+	var entry: Dictionary = VEHICLES[index]
+	var packed := load(String(entry["scene"])) as PackedScene
+	if packed == null:
+		push_error("Game: cannot load %s" % entry["scene"])
+		return
+
+	if vehicle != null and is_instance_valid(vehicle):
+		vehicle.queue_free()
+		# Take it out of the tree immediately so the camera never sees a
+		# freed node between now and the end of the frame.
+		remove_child(vehicle)
+
+	current_index = index
+	vehicle = packed.instantiate() as Vehicle
+	vehicle.name = "Vehicle"
+	add_child(vehicle)
+
+	var point := spawn_transform(float(entry["drop"]))
+	vehicle.global_transform = point
+	vehicle.set_spawn(point)
+
+	if _camera:
+		_camera.set_target(vehicle.get_node_or_null("CameraTarget"))
+	if _hud and _hud.has_method("set_vehicle"):
+		_hud.set_vehicle(vehicle)
+
+	print("Game: driving the %s" % entry["name"])
+
+
+## Spawn transform on the terrain surface, lifted by [param drop] metres so the
+## car falls the last short distance onto its springs.
+func spawn_transform(drop: float) -> Transform3D:
+	var height := 0.0
+	if _terrain:
+		height = _terrain.sample_height(spawn_xz.x, spawn_xz.y)
+	return Transform3D(Basis.IDENTITY,
+		Vector3(spawn_xz.x, height + drop, spawn_xz.y))

@@ -62,31 +62,31 @@ const SPECIES := [
 		"anchor": 1.2, "wind": 0.035},
 	{"name": "fern_a", "count": 520, "scale": [0.7, 1.3], "max_slope": 0.42,
 		"tint": Color(0.26, 0.40, 0.18), "collide": false, "radius": 0.0,
-		"anchor": 0.1, "wind": 0.09},
+		"anchor": 0.1, "wind": 0.09, "cull": 75.0, "lod_bias": 2.5},
 	{"name": "fern_b", "count": 380, "scale": [0.7, 1.25], "max_slope": 0.42,
 		"tint": Color(0.24, 0.37, 0.17), "collide": false, "radius": 0.0,
-		"anchor": 0.1, "wind": 0.09},
+		"anchor": 0.1, "wind": 0.09, "cull": 75.0, "lod_bias": 2.5},
 	{"name": "bush_a", "count": 620, "scale": [0.8, 1.6], "max_slope": 0.5,
 		"tint": Color(0.29, 0.36, 0.18), "collide": false, "radius": 0.0,
-		"anchor": 0.05, "wind": 0.08},
+		"anchor": 0.05, "wind": 0.08, "cull": 70.0, "lod_bias": 2.5},
 	{"name": "bush_b", "count": 460, "scale": [0.8, 1.5], "max_slope": 0.5,
 		"tint": Color(0.31, 0.38, 0.19), "collide": false, "radius": 0.0,
-		"anchor": 0.05, "wind": 0.08},
+		"anchor": 0.05, "wind": 0.08, "cull": 70.0, "lod_bias": 2.5},
 	{"name": "plant", "count": 340, "scale": [0.8, 1.4], "max_slope": 0.4,
 		"tint": Color(0.33, 0.42, 0.2), "collide": false, "radius": 0.0,
-		"anchor": 0.05, "wind": 0.1},
+		"anchor": 0.05, "wind": 0.1, "cull": 70.0, "lod_bias": 2.5},
 	{"name": "grass_tuft", "count": 1500, "scale": [0.8, 1.8], "max_slope": 0.38,
 		"tint": Color(0.34, 0.42, 0.19), "collide": false, "radius": 0.0,
-		"anchor": 0.0, "wind": 0.13},
+		"anchor": 0.0, "wind": 0.13, "cull": 55.0, "lod_bias": 3.0},
 	{"name": "rock_a", "count": 70, "scale": [0.25, 0.7], "max_slope": 1.0,
 		"tint": Color(0.40, 0.39, 0.37), "collide": true, "radius": 0.9,
-		"anchor": 99.0, "wind": 0.0},
+		"anchor": 99.0, "wind": 0.0, "cull": 200.0},
 	{"name": "rock_b", "count": 80, "scale": [0.2, 0.6], "max_slope": 1.0,
 		"tint": Color(0.38, 0.37, 0.36), "collide": true, "radius": 0.7,
-		"anchor": 99.0, "wind": 0.0},
+		"anchor": 99.0, "wind": 0.0, "cull": 200.0},
 	{"name": "rock_c", "count": 120, "scale": [0.15, 0.5], "max_slope": 1.0,
 		"tint": Color(0.42, 0.41, 0.39), "collide": true, "radius": 0.5,
-		"anchor": 99.0, "wind": 0.0},
+		"anchor": 99.0, "wind": 0.0, "cull": 200.0},
 ]
 
 ## Where the converted assets live.
@@ -135,7 +135,12 @@ func _scatter(species: Dictionary) -> void:
 	var transforms: Array[Transform3D] = []
 	var attempts: int = int(species["count"]) * 4
 	var wanted: int = int(species["count"])
-	var scale_range: Array = species["scale"]
+	# Pulled out of a Dictionary, so a malformed entry would otherwise crash on
+	# the first instance rather than being reported here.
+	var scale_range: Array = species.get("scale", [1.0, 1.0])
+	if scale_range.size() < 2:
+		push_warning("Forest: bad scale range for %s" % species.get("name", "?"))
+		scale_range = [1.0, 1.0]
 	var max_slope: float = species["max_slope"]
 
 	for _i in attempts:
@@ -164,17 +169,18 @@ func _scatter(species: Dictionary) -> void:
 				continue
 
 		var y := _terrain.sample_height(x, z)
-		var s := _rng.randf_range(scale_range[0], scale_range[1])
-		var basis := Basis(Vector3.UP, _rng.randf_range(0.0, TAU))
+		var s := _rng.randf_range(float(scale_range[0]), float(scale_range[1]))
+		# Named xform, not basis: "basis" shadows Node3D.basis.
+		var xform := Basis(Vector3.UP, _rng.randf_range(0.0, TAU))
 		# Sit props on the slope rather than standing them all bolt upright.
 		var normal := _terrain.sample_normal(x, z)
 		var lean: float = 0.35 if String(species["name"]).begins_with("rock") else 0.5
 		var up := Vector3.UP.lerp(normal, lean).normalized()
 		var tilt := Basis(Vector3.UP.cross(up).normalized() if up != Vector3.UP else Vector3.RIGHT,
 			Vector3.UP.angle_to(up)) if up != Vector3.UP else Basis()
-		basis = tilt * basis
-		basis = basis.scaled(Vector3(s, s, s))
-		transforms.append(Transform3D(basis, Vector3(x, y, z)))
+		xform = tilt * xform
+		xform = xform.scaled(Vector3(s, s, s))
+		transforms.append(Transform3D(xform, Vector3(x, y, z)))
 
 	if transforms.is_empty():
 		return
@@ -194,7 +200,18 @@ func _scatter(species: Dictionary) -> void:
 	# Grass and small plants are not worth shadowing or lighting statically.
 	if not bool(species["collide"]):
 		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+	# Distance culling. Small plants are invisible long before they are far
+	# away, so drawing them at 300 m is pure waste; the fade margin stops them
+	# popping. This is the single biggest saving on a weak machine.
+	var cull: float = float(species.get("cull", 0.0))
+	if cull > 0.0:
+		mmi.visibility_range_end = cull
+		mmi.visibility_range_end_margin = cull * 0.15
+		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 	mmi.extra_cull_margin = 8.0
+	# Let Godot skip lighting maths on things too far to matter.
+	mmi.lod_bias = float(species.get("lod_bias", 1.0))
 	add_child(mmi)
 	_placed += transforms.size()
 
@@ -205,9 +222,10 @@ func _scatter(species: Dictionary) -> void:
 ## Trunks and rocks get a simple capsule or sphere. A convex hull per tree
 ## would be more accurate, but a car hitting a tree only ever touches the
 ## trunk, and hundreds of hulls would slow the broadphase down for nothing.
-func _add_colliders(transforms: Array[Transform3D], radius: float, name: String) -> void:
+func _add_colliders(transforms: Array[Transform3D], radius: float,
+		species_name: String) -> void:
 	var body := StaticBody3D.new()
-	body.name = name + "_collision"
+	body.name = species_name + "_collision"
 	body.collision_layer = 1
 	body.collision_mask = 1
 	var phys := PhysicsMaterial.new()
@@ -216,23 +234,24 @@ func _add_colliders(transforms: Array[Transform3D], radius: float, name: String)
 	body.physics_material_override = phys
 	add_child(body)
 
-	var is_rock := name.begins_with("rock")
+	var is_rock := species_name.begins_with("rock")
 	for t in transforms:
 		if t.origin.length() > collision_radius:
 			continue
 		var col := CollisionShape3D.new()
-		var scale := t.basis.get_scale().y
+		# Named prop_scale: "scale" shadows Node3D.scale.
+		var prop_scale := t.basis.get_scale().y
 		if is_rock:
 			var sphere := SphereShape3D.new()
-			sphere.radius = radius * scale
+			sphere.radius = radius * prop_scale
 			col.shape = sphere
-			col.position = t.origin + Vector3.UP * radius * scale * 0.4
+			col.position = t.origin + Vector3.UP * radius * prop_scale * 0.4
 		else:
 			var cap := CapsuleShape3D.new()
-			cap.radius = radius * scale * 0.5
-			cap.height = 6.0 * scale
+			cap.radius = radius * prop_scale * 0.5
+			cap.height = 6.0 * prop_scale
 			col.shape = cap
-			col.position = t.origin + Vector3.UP * 3.0 * scale
+			col.position = t.origin + Vector3.UP * 3.0 * prop_scale
 		body.add_child(col)
 		_colliders += 1
 

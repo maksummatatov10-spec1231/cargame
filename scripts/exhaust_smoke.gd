@@ -59,6 +59,7 @@ func _ready() -> void:
 
 	# One tyre smoke emitter per driven wheel, parented to the wheel so it
 	# follows the suspension and the car.
+	_vehicle.ensure_wheels()
 	for wheel in _vehicle.get_wheels():
 		if wheel.is_driven:
 			_tyre_emitters.append(_make_tyre_emitter(wheel, mesh))
@@ -238,7 +239,7 @@ func _process(delta: float) -> void:
 			continue
 		if i >= _tyre_emitters.size():
 			break
-		var emitter := _tyre_emitters[i]
+		var emitter: GPUParticles3D = _tyre_emitters[i]
 		var slip := absf(wheel.slip_ratio)
 		var smoking := wheel.grounded and slip > tyre_smoke_threshold
 		emitter.emitting = smoking

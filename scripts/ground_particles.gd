@@ -38,6 +38,7 @@ func _ready() -> void:
 		push_warning("GroundParticles expects to be a child of a Vehicle")
 		return
 
+	_vehicle.ensure_wheels()
 	for wheel in _vehicle.get_wheels():
 		_emitters.append(_make_clods(wheel))
 		_dust.append(_make_dust(wheel))
@@ -199,9 +200,8 @@ func _physics_process(_delta: float) -> void:
 	if _vehicle == null:
 		return
 	var wheels := _vehicle.get_wheels()
-	for i in wheels.size():
-		if i >= _emitters.size():
-			break
+	var count := mini(wheels.size(), mini(_emitters.size(), _dust.size()))
+	for i in count:
 		_update_wheel(wheels[i], _emitters[i], _dust[i])
 
 
