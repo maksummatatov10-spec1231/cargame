@@ -142,7 +142,7 @@ def build(asset_dir, out_path, preset_name="bmw"):
 
     lines = []
     ext_count = 5 if is_pickup else 5
-    lines.append('[gd_scene load_steps=%d format=3]\n' % (len(hulls) + ext_count + 7))
+    lines.append('[gd_scene load_steps=%d format=3]\n' % (len(hulls) + ext_count + 5))
 
     if is_pickup:
         # The pickup is exported as one glTF per animated part, so the model
@@ -154,9 +154,7 @@ def build(asset_dir, out_path, preset_name="bmw"):
     lines.append('[ext_resource type="Script" path="res://scripts/wheel.gd" id="3_wheel"]')
     if not is_pickup:
         lines.append('[ext_resource type="Script" path="res://scripts/car_model.gd" id="4_model"]')
-    lines.append('[ext_resource type="Script" path="res://scripts/exhaust_smoke.gd" id="5_smoke"]')
     lines.append('[ext_resource type="Script" path="res://scripts/tyre_marks.gd" id="6_marks"]')
-    lines.append('[ext_resource type="Script" path="res://scripts/ground_particles.gd" id="7_dirt"]')
     lines.append('[ext_resource type="Script" path="res://scripts/smoothing.gd" id="8_smooth"]\n')
 
     for i, pts in enumerate(hulls):
@@ -280,14 +278,8 @@ def build(asset_dir, out_path, preset_name="bmw"):
         lines.append('script = ExtResource("4_model")')
         lines.append('model_scene = ExtResource("1_model")\n')
 
-    lines.append('[node name="ExhaustSmoke" type="Node3D" parent="."]')
-    lines.append('script = ExtResource("5_smoke")\n')
-
     lines.append('[node name="TyreMarks" type="Node3D" parent="."]')
     lines.append('script = ExtResource("6_marks")\n')
-
-    lines.append('[node name="GroundParticles" type="Node3D" parent="."]')
-    lines.append('script = ExtResource("7_dirt")\n')
 
     lines.append('[node name="CameraTarget" type="Marker3D" parent="."]')
     cam_h = 1.35 if is_pickup else 0.95

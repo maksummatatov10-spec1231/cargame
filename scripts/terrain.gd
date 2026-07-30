@@ -29,7 +29,23 @@ enum Surface { GRASS, DIRT, ROCK }
 ## where the classifier called them grass.
 const TERRAIN_SHADER := """
 shader_type spatial;
-render_mode cull_back, diffuse_burley, specular_schlick_ggx;
+render_mode cull_back, diffuse_lambert, specular_disabled;
+
+// Why this shader has no procedural noise in it any more.
+//
+// The previous version called a 4-octave fbm six times per pixel: twice for
+// the colour and four more to build a normal by finite differences. Each fbm
+// is 4 noise lookups, each noise is 4 hashes, and each hash is a
+// fract(sin(dot(...))). That is 96 sin() calls for every pixel of ground.
+//
+// Ground covers most of the screen, so at 1080p that came to ~120 million
+// sin() per frame, or about 7 billion per second at 60 fps. No mid-range GPU
+// can do that - and unlike the sky, you cannot look away from the ground.
+// That was the real cause of the frame rate collapse.
+//
+// Everything below is texture lookups and arithmetic instead. Texture sampling
+// is what GPUs are built for: the hardware fetches, filters and caches it for
+// free, and mipmaps mean distant ground costs less rather than the same.
 
 uniform vec3 grass_colour : source_color;
 uniform vec3 grass_colour_dry : source_color;
@@ -37,35 +53,12 @@ uniform vec3 dirt_colour : source_color;
 uniform vec3 rock_colour : source_color;
 uniform float detail_scale = 0.35;
 
+// A single tiling noise texture, generated once on the CPU at startup.
+uniform sampler2D detail_noise : hint_default_white, filter_linear_mipmap, repeat_enable;
+
 varying vec3 world_pos;
 varying vec3 world_normal;
 varying vec3 blend;
-
-float hash(vec2 p) {
-	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
-
-float noise(vec2 p) {
-	vec2 i = floor(p);
-	vec2 f = fract(p);
-	f = f * f * (3.0 - 2.0 * f);
-	float a = hash(i);
-	float b = hash(i + vec2(1.0, 0.0));
-	float c = hash(i + vec2(0.0, 1.0));
-	float d = hash(i + vec2(1.0, 1.0));
-	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-}
-
-float fbm(vec2 p) {
-	float v = 0.0;
-	float a = 0.5;
-	for (int i = 0; i < 4; i++) {
-		v += a * noise(p);
-		p *= 2.03;
-		a *= 0.5;
-	}
-	return v;
-}
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -80,34 +73,32 @@ void fragment() {
 	float dirt_amount = clamp(blend.r * (1.0 - rock_amount), 0.0, 1.0);
 	float grass_amount = clamp(1.0 - rock_amount - dirt_amount, 0.0, 1.0);
 
-	vec2 uv_big = world_pos.xz * detail_scale;
-	vec2 uv_fine = world_pos.xz * detail_scale * 6.0;
+	// Two taps at different scales stand in for the whole fbm stack: one for
+	// broad patchiness, one for close-up grain. The texture already contains
+	// several octaves, baked once instead of recomputed per pixel.
+	vec2 uv_big = world_pos.xz * detail_scale * 0.08;
+	vec2 uv_fine = world_pos.xz * detail_scale * 0.9;
+	vec4 big = texture(detail_noise, uv_big);
+	vec4 fine = texture(detail_noise, uv_fine);
+	float n_big = big.r;
+	float n_fine = fine.r;
 
-	float n_big = fbm(uv_big);
-	float n_fine = fbm(uv_fine);
-
-	// Grass: two tones mixed by the coarse noise, speckled by the fine one.
 	vec3 grass = mix(grass_colour, grass_colour_dry, n_big);
 	grass *= 0.82 + 0.36 * n_fine;
 
 	vec3 dirt = dirt_colour * (0.78 + 0.44 * n_fine);
-	// Rock gets stratified banding from the height, like sedimentary layers.
 	float band = 0.5 + 0.5 * sin(world_pos.y * 1.7 + n_big * 3.0);
 	vec3 rock = rock_colour * (0.72 + 0.3 * band) * (0.85 + 0.3 * n_fine);
 
-	vec3 albedo = grass * grass_amount + dirt * dirt_amount + rock * rock_amount;
-	ALBEDO = albedo;
+	ALBEDO = grass * grass_amount + dirt * dirt_amount + rock * rock_amount;
+	ROUGHNESS = mix(0.95, 0.8, rock_amount);
 
-	// Grass is matte, rock a little sharper, wet dirt slightly glossy.
-	ROUGHNESS = mix(0.93, 0.72, rock_amount) - 0.06 * dirt_amount;
-	SPECULAR = 0.18 + 0.15 * rock_amount;
-
-	// Cheap normal detail so the sun catches the ground texture.
-	float e = 0.35;
-	float hx = fbm(uv_fine + vec2(e, 0.0)) - fbm(uv_fine - vec2(e, 0.0));
-	float hz = fbm(uv_fine + vec2(0.0, e)) - fbm(uv_fine - vec2(0.0, e));
-	NORMAL_MAP = normalize(vec3(-hx, -hz, 1.0) * vec3(1.0, 1.0, 2.2)) * 0.5 + 0.5;
-	NORMAL_MAP_DEPTH = 0.55 + 0.5 * grass_amount;
+	// The normal is stored in the texture's green and blue channels, so the
+	// four extra fbm evaluations the old shader used for finite differences
+	// are gone entirely - it is now one already-fetched sample.
+	vec3 detail_n = vec3(fine.g * 2.0 - 1.0, fine.b * 2.0 - 1.0, 1.0);
+	NORMAL_MAP = normalize(detail_n * vec3(1.0, 1.0, 2.4)) * 0.5 + 0.5;
+	NORMAL_MAP_DEPTH = 0.45 + 0.35 * grass_amount;
 }
 """
 
@@ -142,6 +133,7 @@ var surfaces := PackedByteArray()
 
 var _cell := 1.0
 var _half := 0.0
+var _plateau_height := 0.0
 
 
 func _ready() -> void:
@@ -211,6 +203,9 @@ func _fractal(wx: float, wz: float) -> float:
 func _generate() -> void:
 	_cell = size / float(resolution - 1)
 	_half = size * 0.5
+	# The height the clearing sits at: the average of the ring of land just
+	# outside it, so the flat area meets the hills instead of being a hole.
+	_plateau_height = _average_ring_height(flat_radius + flat_falloff)
 	heights.resize(resolution * resolution)
 	surfaces.resize(resolution * resolution)
 
@@ -220,12 +215,20 @@ func _generate() -> void:
 			var wz := z * _cell - _half
 			var h := _fractal(wx, wz) * height_scale
 
-			# Flatten the middle so the car spawns on level ground, easing out
-			# rather than cutting a crater.
+			# Level the middle so the car spawns on flat ground.
+			#
+			# This used to multiply the height towards zero, which does not
+			# make a clearing - it digs a pit. The surrounding land sits at
+			# ~19 m, so scaling the centre to 0 left a 19 m crater with walls
+			# the car could not climb out of.
+			#
+			# Blending towards the local height instead keeps the clearing at
+			# the same level as the land around it.
 			var dist := sqrt(wx * wx + wz * wz)
 			if dist < flat_radius + flat_falloff:
 				var t := clampf((dist - flat_radius) / maxf(flat_falloff, 0.01), 0.0, 1.0)
-				h *= t * t * (3.0 - 2.0 * t)
+				t = t * t * (3.0 - 2.0 * t)
+				h = lerpf(_plateau_height, h, t)
 
 			heights[z * resolution + x] = h
 
@@ -252,6 +255,17 @@ func _classify_surfaces() -> void:
 				if patch > 0.68:
 					s = Surface.DIRT
 			surfaces[i] = s
+
+
+## Mean terrain height on a circle of the given radius, before levelling.
+## Used to decide what height the spawn clearing should sit at.
+func _average_ring_height(radius: float) -> float:
+	var total := 0.0
+	var samples := 48
+	for i in samples:
+		var a := TAU * i / float(samples)
+		total += _fractal(cos(a) * radius, sin(a) * radius) * height_scale
+	return total / float(samples)
 
 
 func _slope_at(x: int, z: int) -> float:
@@ -413,11 +427,47 @@ func _surface_colour(x: int, z: int) -> Color:
 	return Color(dirt / total, grass / total, rock / total, 1.0)
 
 
+## Bakes the detail noise the shader samples: red is height/grain, green and
+## blue carry a tangent-space normal derived from it. Generating this once at
+## startup replaces ~96 sin() calls per pixel per frame with one texture fetch.
+func _make_detail_texture() -> ImageTexture:
+	var size := 256
+	var height := PackedFloat32Array()
+	height.resize(size * size)
+	for y in size:
+		for x in size:
+			# Several octaves, summed once here instead of per pixel.
+			var v := 0.0
+			var amp := 0.5
+			var freq := 1
+			for octave in 4:
+				v += amp * _value_noise(float(x * freq) / 32.0,
+					float(y * freq) / 32.0, octave * 31)
+				amp *= 0.5
+				freq *= 2
+			height[y * size + x] = v
+
+	var img := Image.create(size, size, true, Image.FORMAT_RGB8)
+	for y in size:
+		for x in size:
+			var h := height[y * size + x]
+			var l := height[y * size + (x - 1 + size) % size]
+			var r := height[y * size + (x + 1) % size]
+			var d := height[((y - 1 + size) % size) * size + x]
+			var u := height[((y + 1) % size) * size + x]
+			var nx := clampf((l - r) * 4.0, -1.0, 1.0)
+			var ny := clampf((d - u) * 4.0, -1.0, 1.0)
+			img.set_pixel(x, y, Color(h, nx * 0.5 + 0.5, ny * 0.5 + 0.5))
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
+
+
 func _make_material() -> ShaderMaterial:
 	var shader := Shader.new()
 	shader.code = TERRAIN_SHADER
 	var mat := ShaderMaterial.new()
 	mat.shader = shader
+	mat.set_shader_parameter("detail_noise", _make_detail_texture())
 	mat.set_shader_parameter("grass_colour", Color(0.26, 0.38, 0.16))
 	mat.set_shader_parameter("grass_colour_dry", Color(0.44, 0.47, 0.22))
 	mat.set_shader_parameter("dirt_colour", Color(0.34, 0.26, 0.17))

@@ -145,38 +145,6 @@ def test_sun():
           "%.0f m" % val("directional_shadow_max_distance"))
 
 
-def test_smoke():
-    print("\n== exhaust smoke ==")
-    path = os.path.join(ROOT, "scripts", "exhaust_smoke.gd")
-    check("smoke script exists", os.path.exists(path))
-    if not os.path.exists(path):
-        return
-    src = open(path).read()
-
-    check("smoke is emitted from the tailpipes", "PIPE_POSITIONS" in src)
-    check("tyre smoke reacts to wheel slip", "slip_ratio" in src)
-    check("smoke is left behind the car, not carried",
-          "local_coords = false" in src)
-    check("particles fade softly into geometry", "proximity_fade_enabled" in src)
-    check("smoke is grey, not black or white",
-          re.search(r"smoke_colour\s*:=\s*Color\(0\.[5-7]", src) is not None)
-
-    # the pipe positions must match the model's actual exhaust tips
-    m = re.findall(r"Vector3\((-?[\d.]+), ([\d.]+), ([\d.]+)\)", src)
-    if m:
-        x, y, z = (float(v) for v in m[0])
-        print("  first pipe at x=%.3f y=%.3f z=%.3f (model tips: +/-0.374, 0.274, 2.201)"
-              % (x, y, z))
-        check("pipes line up with the model's exhaust tips",
-              abs(abs(x) - 0.374) < 0.05 and abs(y - 0.274) < 0.06 and 2.1 < z < 2.4)
-
-    scene = open(os.path.join(ROOT, "scenes", "car.tscn")).read()
-    check("smoke node is in the car scene", "ExhaustSmoke" in scene)
-    gen = open(os.path.join(ROOT, "tools", "build_car_scene.py")).read()
-    check("the scene generator also emits it (so it survives a rebuild)",
-          "ExhaustSmoke" in gen)
-
-
 def test_ground():
     print("\n== terrain ==")
     src = open(os.path.join(ROOT, "scripts", "terrain.gd")).read()
@@ -288,33 +256,55 @@ def test_forest():
 
 
 def test_effects():
-    print("\n== tyre marks and dirt ==")
+    print("\n== tyre marks and crushable plants ==")
     marks = os.path.join(ROOT, "scripts", "tyre_marks.gd")
     check("tyre mark script exists", os.path.exists(marks))
     if os.path.exists(marks):
         src = open(marks).read()
-        check("marks are a mesh ribbon, not stacked decals",
-              "ImmediateMesh" in src)
+        check("marks are a mesh ribbon, not stacked decals", "ImmediateMesh" in src)
         check("marks stay on the ground as the car drives on",
               "top_level = true" in src)
         check("marks fade out rather than accumulating forever",
               "fade_time" in src and "pop_front" in src)
-        check("marks appear on soft ground even without sliding",
-              "surface_looseness" in src)
+        check("an empty ribbon never opens a surface", "drawable" in src)
 
-    dirt = os.path.join(ROOT, "scripts", "ground_particles.gd")
-    check("ground particle script exists", os.path.exists(dirt))
-    if os.path.exists(dirt):
-        src = open(dirt).read()
-        check("clods are thrown with gravity, so they arc",
-              "gravity = Vector3(0.0, -9.81, 0.0)" in src)
-        check("dust is separate from the clods", "_make_dust" in src)
-        check("particle colour follows the surface", "surface_colours" in src)
-        check("tarmac throws nothing", "surface_looseness <= 0.01" in src)
+    # Particles were removed at the user's request.
+    for gone in ("ground_particles.gd", "exhaust_smoke.gd"):
+        check("%s is removed" % gone,
+              not os.path.exists(os.path.join(ROOT, "scripts", gone)))
+    for scene in ("car.tscn", "pickup.tscn", "defender.tscn"):
+        text = open(os.path.join(ROOT, "scenes", scene)).read()
+        check("  %s has no particle nodes" % scene,
+              "GroundParticles" not in text and "ExhaustSmoke" not in text)
 
-    scene = open(os.path.join(ROOT, "scenes", "car.tscn")).read()
-    check("effects are wired into the car scene",
-          "TyreMarks" in scene and "GroundParticles" in scene)
+    crush = os.path.join(ROOT, "scripts", "crushable_plants.gd")
+    check("crushable plant script exists", os.path.exists(crush))
+    if os.path.exists(crush):
+        src = open(crush).read()
+        check("crush points are uploaded per wheel", "crush_points" in src)
+        check("plants spring back up", "recovery_time" in src)
+
+    forest = open(os.path.join(ROOT, "scripts", "forest.gd")).read()
+    check("the shader bends plants under the wheels",
+          "crushable" in forest and "crush_radius" in forest)
+    check("bending happens in the vertex stage, not on the CPU",
+          "VERTEX.xz += push.xz" in forest)
+
+    # Nothing solid may be short enough to look like scenery.
+    manifest = json.load(open(os.path.join(ROOT, "assets", "forest",
+                                           "forest_manifest.json")))
+    heights = {a["name"]: a["height"] for a in manifest["assets"]}
+    solid_small = []
+    for block in re.finditer(
+            r'\{"name": "(\w+)", "count": \d+, "scale": \[([\d.]+), ([\d.]+)\][^{]*?\},',
+            forest, re.S):
+        name, lo = block.group(1), float(block.group(2))
+        if name in heights and '"collide": true' in block.group(0):
+            if heights[name] * lo < 0.5:
+                solid_small.append("%s %.2f m" % (name, heights[name] * lo))
+    check("nothing solid is shorter than 0.5 m", not solid_small,
+          ", ".join(solid_small))
+
 
 
 def test_clouds():
@@ -433,7 +423,6 @@ def main():
     test_forest()
     test_effects()
     test_clouds()
-    test_smoke()
     test_performance()
     test_input()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES

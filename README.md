@@ -1,4 +1,4 @@
-# CarGame — Stage 2.4
+# CarGame — Stage 2.5
 
 A driving game built in **Godot 4.3**. Third person, rear chase camera, a real
 BMW 1M model, and a vehicle simulation where everything that moves the car comes
@@ -285,6 +285,19 @@ arrived for 3D in 4.4 — so `scripts/smoothing.gd` does it explicitly, using
 `Engine.get_physics_interpolation_fraction()` to blend between the last two
 physics transforms.
 
+## Why it was slow
+
+The ground shader called a 4-octave fbm six times per pixel — twice for colour
+and four more to build a normal by finite differences. Each fbm is 4 noise
+lookups, each noise is 4 hashes, and each hash is a `fract(sin(dot(...)))`.
+That is **96 `sin()` calls for every pixel of ground**, and the ground covers
+most of the screen: about 7 billion `sin()` per second at 1080p60. The sky was
+doing the same thing on its half of the screen.
+
+Both now use baked textures and cheap arithmetic instead. Texture sampling is
+what GPUs are built for — filtered and cached in hardware, and mipmaps mean
+distant ground gets cheaper rather than staying the same price.
+
 ## Editing the map
 
 The world is `scenes/world.tscn` — open it and you will see the terrain and the
@@ -300,7 +313,8 @@ this scene, so you can also drop your own hand-placed props into it.
 | --- | --- | --- |
 | Triangles on screen | 6.10 M | 2.79 M |
 | **Shadow work per frame** | **37.5 M** | **6.7 M** |
-| **Sky shader** | **~1400 noise lookups/pixel** | **216, at half resolution** |
+| **Ground shader** | **96 `sin()` per pixel** | **2 texture fetches** |
+| **Sky shader** | **~1400 noise lookups/pixel** | **96, at half resolution** |
 | PCSS soft shadows | on | off (fixed width + blur) |
 | MSAA | 2x | off, FXAA only |
 | Trees | 2 LOD bands | 3 bands + distance culling |

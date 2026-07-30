@@ -34,6 +34,8 @@ uniform float detail = 1.0;
 
 // Value noise. Cheap, tiles well enough at this scale, and does not need a
 // texture to be shipped with the project.
+// No sin() anywhere: fract/dot only. A transcendental per hash was a large
+// part of why the sky was the most expensive thing on screen.
 float hash(vec3 p) {
 	p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));
 	p *= 17.0;
@@ -98,11 +100,12 @@ float cloud_density(vec3 pos, float t) {
 // a 5.8 TFLOPS card, so that alone could not hit 60 fps - it was the single
 // biggest cost in the scene.
 //
-// 12 steps with a 2-step light march and a cheaper density function keeps the
-// same look at roughly a tenth of the cost, and `use_half_res_pass` renders
-// the sky at half resolution, which the clouds are soft enough not to mind.
-const int MARCH_STEPS = 12;
-const int LIGHT_STEPS = 2;
+// 8 steps with a single light sample and a cheaper density function keeps the
+// same look at about a fifteenth of the cost: 96 noise lookups per pixel
+// instead of 1400. `use_half_res_pass` renders the sky at half resolution on
+// top of that, which clouds are soft enough not to mind.
+const int MARCH_STEPS = 8;
+const int LIGHT_STEPS = 1;
 
 void sky() {
 	vec3 dir = EYEDIR;

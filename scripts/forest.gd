@@ -36,6 +36,14 @@ uniform float wind_scale = 0.18;
 uniform float anchor_height = 0.6;
 uniform float roughness_value = 0.85;
 
+// Crush points, one per wheel touching the ground: xyz is the world position
+// of the contact patch, w is how strongly it is pressing (1 under the wheel,
+// fading to 0 as the plant recovers). Small plants have no collision, so this
+// is what makes driving over them look like anything at all.
+uniform vec4 crush_points[8];
+uniform float crush_radius = 1.4;
+uniform bool crushable = false;
+
 varying float sway_amount;
 
 void vertex() {
@@ -49,6 +57,41 @@ void vertex() {
 	sway_amount = sway;
 	VERTEX.x += sway * h * wind_strength;
 	VERTEX.z += cos(t * 0.9 + phase) * h * wind_strength * 0.6;
+
+	if (crushable) {
+		// Find the wheel pressing hardest on this plant. Only the horizontal
+		// distance matters: a wheel directly above should flatten it whatever
+		// the ride height.
+		float best = 0.0;
+		vec3 push = vec3(0.0);
+		for (int i = 0; i < 8; i++) {
+			float strength = crush_points[i].w;
+			if (strength <= 0.001) {
+				continue;
+			}
+			vec2 delta = world.xz - crush_points[i].xz;
+			float d = length(delta);
+			if (d > crush_radius) {
+				continue;
+			}
+			// Full effect under the wheel, easing off towards the edge.
+			float amount = (1.0 - smoothstep(0.0, crush_radius, d)) * strength;
+			if (amount > best) {
+				best = amount;
+				// Lay the plant away from the wheel centre, so it folds in the
+				// direction the tyre rolled over it rather than collapsing
+				// straight down.
+				vec2 dir = d > 0.001 ? delta / d : vec2(1.0, 0.0);
+				push = vec3(dir.x, 0.0, dir.y);
+			}
+		}
+		if (best > 0.0) {
+			// Bend from the base: the top travels furthest, the roots stay put.
+			float bend = best * h;
+			VERTEX.xz += push.xz * bend * 1.35;
+			VERTEX.y -= bend * 0.75;
+		}
+	}
 }
 
 void fragment() {
@@ -81,7 +124,7 @@ const SPECIES := [
 	{"name": "tree_far", "count": 220, "scale": [0.85, 1.5], "max_slope": 0.34,
 		"tint": Color(0.28, 0.38, 0.19), "collide": false, "radius": 0.55,
 		"anchor": 1.2, "wind": 0.03, "min_dist": 170.0, "cull": 340.0,
-		"lod_bias": 4.0},
+		"lod_bias": 4.0, "height": 6.87},
 	{"name": "fern_a", "count": 520, "scale": [0.7, 1.3], "max_slope": 0.42,
 		"tint": Color(0.26, 0.40, 0.18), "collide": false, "radius": 0.0,
 		"anchor": 0.1, "wind": 0.09, "cull": 75.0, "lod_bias": 2.5},
@@ -97,18 +140,28 @@ const SPECIES := [
 	{"name": "plant", "count": 340, "scale": [0.8, 1.4], "max_slope": 0.4,
 		"tint": Color(0.33, 0.42, 0.2), "collide": false, "radius": 0.0,
 		"anchor": 0.05, "wind": 0.1, "cull": 70.0, "lod_bias": 2.5},
-	{"name": "grass_tuft", "count": 1500, "scale": [0.8, 1.8], "max_slope": 0.38,
+	# Grass is capped so it stays under the 0.5 m crushable threshold at every
+	# scale: 0.56 m base x 0.85 = 0.48 m. Above that it would be tall enough to
+	# want collision, and it is exactly the sort of thing you should be able to
+	# drive straight through.
+	{"name": "grass_tuft", "count": 1500, "scale": [0.55, 0.85], "max_slope": 0.38,
 		"tint": Color(0.34, 0.42, 0.19), "collide": false, "radius": 0.0,
-		"anchor": 0.0, "wind": 0.13, "cull": 55.0, "lod_bias": 3.0},
+		"anchor": 0.0, "wind": 0.13, "cull": 55.0, "lod_bias": 3.0,
+		"height": 0.56},
 	{"name": "rock_a", "count": 70, "scale": [0.25, 0.7], "max_slope": 1.0,
 		"tint": Color(0.40, 0.39, 0.37), "collide": true, "radius": 0.9,
 		"anchor": 99.0, "wind": 0.0, "cull": 200.0, "shadows": true},
-	{"name": "rock_b", "count": 80, "scale": [0.2, 0.6], "max_slope": 1.0,
+	# Rocks are solid, so they must be big enough to be worth stopping for.
+	# rock_b and rock_c used to scale down to 0.53 m and 0.49 m, which is a
+	# knee-high stone that looks like scenery but stops a car dead - that is
+	# what felt like crashing into a small plant. Their minimum size is now
+	# well above the crushable threshold so anything solid clearly looks solid.
+	{"name": "rock_b", "count": 80, "scale": [0.45, 0.8], "max_slope": 1.0,
 		"tint": Color(0.38, 0.37, 0.36), "collide": true, "radius": 0.7,
-		"anchor": 99.0, "wind": 0.0, "cull": 200.0},
-	{"name": "rock_c", "count": 120, "scale": [0.15, 0.5], "max_slope": 1.0,
+		"anchor": 99.0, "wind": 0.0, "cull": 200.0, "height": 2.65},
+	{"name": "rock_c", "count": 120, "scale": [0.40, 0.7], "max_slope": 1.0,
 		"tint": Color(0.42, 0.41, 0.39), "collide": true, "radius": 0.5,
-		"anchor": 99.0, "wind": 0.0, "cull": 200.0},
+		"anchor": 99.0, "wind": 0.0, "cull": 200.0, "height": 3.29},
 ]
 
 ## Where the converted assets live.
@@ -119,6 +172,9 @@ const SPECIES := [
 @export var collision_radius := 170.0
 ## Reproducible layout.
 @export var scatter_seed := 90210
+## Plants shorter than this are crushable: no collision, and they bend under
+## the wheels instead of stopping the car dead.
+@export var crushable_height := 0.5
 
 ## Tick this in the editor to re-scatter after changing anything above.
 @export var rebuild := false:
@@ -128,6 +184,7 @@ const SPECIES := [
 			build()
 
 var _terrain: Terrain
+var _crusher: CrushablePlants
 var _rng := RandomNumberGenerator.new()
 var _placed := 0
 var _colliders := 0
@@ -160,6 +217,13 @@ func build() -> void:
 	if _terrain.heights.is_empty():
 		_terrain.build()
 	_rng.seed = scatter_seed
+
+	# The node that tells the crushable plants where the wheels are.
+	if not Engine.is_editor_hint():
+		_crusher = CrushablePlants.new()
+		_crusher.name = "PlantCrusher"
+		_crusher.max_height = crushable_height
+		add_child(_crusher)
 
 	for species in SPECIES:
 		_scatter(species)
@@ -270,6 +334,8 @@ func _scatter(species: Dictionary) -> void:
 	add_child(mmi)
 	if Engine.is_editor_hint() and get_tree() != null:
 		mmi.owner = get_tree().edited_scene_root
+	if _is_crushable(species) and _crusher != null:
+		_crusher.register_material(mmi.material_override)
 	_placed += transforms.size()
 
 	if bool(species["collide"]):
@@ -315,11 +381,25 @@ func _add_colliders(transforms: Array[Transform3D], radius: float,
 		_colliders += 1
 
 
+## True for plants short enough to drive over. They get no collision at all;
+## instead the shader bends them out of the way under the wheels.
+func _is_crushable(species: Dictionary) -> bool:
+	# Anything solid is never crushable.
+	if bool(species.get("collide", false)):
+		return false
+	# Everything soft bends. Grass is under the height threshold outright;
+	# ferns and bushes are taller but they are still vegetation the car should
+	# flatten rather than clip through rigidly, so they bend too - just from
+	# higher up, which the shader handles through anchor_height.
+	return true
+
+
 func _make_material(species: Dictionary) -> ShaderMaterial:
 	var shader := Shader.new()
 	shader.code = WIND_SHADER
 	var mat := ShaderMaterial.new()
 	mat.shader = shader
+	mat.set_shader_parameter("crushable", _is_crushable(species))
 	var tint: Color = species["tint"]
 	mat.set_shader_parameter("tint", Vector3(tint.r, tint.g, tint.b))
 	mat.set_shader_parameter("wind_strength", float(species["wind"]))

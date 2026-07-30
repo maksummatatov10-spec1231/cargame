@@ -1,12 +1,10 @@
-[gd_scene load_steps=21 format=3]
+[gd_scene load_steps=19 format=3]
 
 [ext_resource type="PackedScene" path="res://assets/car/bmw_1m.gltf" id="1_model"]
 [ext_resource type="Script" path="res://scripts/vehicle.gd" id="2_vehicle"]
 [ext_resource type="Script" path="res://scripts/wheel.gd" id="3_wheel"]
 [ext_resource type="Script" path="res://scripts/car_model.gd" id="4_model"]
-[ext_resource type="Script" path="res://scripts/exhaust_smoke.gd" id="5_smoke"]
 [ext_resource type="Script" path="res://scripts/tyre_marks.gd" id="6_marks"]
-[ext_resource type="Script" path="res://scripts/ground_particles.gd" id="7_dirt"]
 [ext_resource type="Script" path="res://scripts/smoothing.gd" id="8_smooth"]
 
 [sub_resource type="ConvexPolygonShape3D" id="Hull0"]
@@ -169,14 +167,8 @@ teleport_threshold = 4.0
 script = ExtResource("4_model")
 model_scene = ExtResource("1_model")
 
-[node name="ExhaustSmoke" type="Node3D" parent="."]
-script = ExtResource("5_smoke")
-
 [node name="TyreMarks" type="Node3D" parent="."]
 script = ExtResource("6_marks")
-
-[node name="GroundParticles" type="Node3D" parent="."]
-script = ExtResource("7_dirt")
 
 [node name="CameraTarget" type="Marker3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.95, 0)
