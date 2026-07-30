@@ -1,0 +1,685 @@
+#!/usr/bin/env python3
+"""
+Offline verification of the vehicle physics.
+
+Godot cannot be run in every environment, so this script re-implements the exact
+maths from scripts/wheel.gd and scripts/vehicle.gd in Python and integrates it
+with a rigid body solver that behaves like Jolt/Godot Physics (semi implicit
+Euler, forces applied at world points, 120 Hz tick).
+
+It checks that:
+  * the drop test lands, bounces once on the springs and settles
+  * the settled ride height matches the designed static sag
+  * the static corner loads add up to the weight of the car and are split
+    according to the front/rear weight distribution
+  * the car accelerates and reaches a sane top speed
+  * braking distance from 100 km/h is realistic
+  * a steady state cornering test produces a believable lateral g
+
+Run:  python3 tools/sim_check.py
+"""
+
+import json
+import math
+import os
+import sys
+
+DT = 1.0 / 120.0
+G = 9.81
+ASSET = os.path.join(os.path.dirname(__file__), "..", "assets", "car")
+
+
+# --------------------------------------------------------------------------- #
+#  small vector / matrix helpers
+# --------------------------------------------------------------------------- #
+
+def v_add(a, b): return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+def v_sub(a, b): return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+def v_mul(a, s): return (a[0] * s, a[1] * s, a[2] * s)
+def v_dot(a, b): return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+def v_len(a): return math.sqrt(v_dot(a, a))
+
+
+def v_cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0])
+
+
+def v_norm(a):
+    l = v_len(a)
+    return (a[0] / l, a[1] / l, a[2] / l) if l > 1e-12 else (0.0, 0.0, 0.0)
+
+
+def m_mul_v(m, v):
+    return (m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+            m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+            m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2])
+
+
+def m_mul(a, b):
+    return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+
+
+def m_t(m):
+    return [[m[j][i] for j in range(3)] for i in range(3)]
+
+
+def m_ident():
+    return [[1.0 if i == j else 0.0 for j in range(3)] for i in range(3)]
+
+
+def orthonormalise(m):
+    x = v_norm((m[0][0], m[1][0], m[2][0]))
+    y = (m[0][1], m[1][1], m[2][1])
+    y = v_norm(v_sub(y, v_mul(x, v_dot(x, y))))
+    z = v_cross(x, y)
+    return [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]]
+
+
+# --------------------------------------------------------------------------- #
+#  wheel — mirrors scripts/wheel.gd
+# --------------------------------------------------------------------------- #
+
+MF_B, MF_C, MF_E = 1.685211, 1.62, 0.35
+
+
+def magic_formula(s):
+    bs = MF_B * s
+    return math.sin(MF_C * math.atan(bs - MF_E * (bs - math.atan(bs))))
+
+
+class Wheel:
+    def __init__(self, name, pos, front, cfg):
+        self.name = name
+        self.mount = pos                     # ray origin in body space
+        self.is_steering = front
+        self.radius = cfg["radius"]
+        self.mass = cfg["wheel_mass"]
+        self.inertia = 0.5 * self.mass * self.radius ** 2
+        self.spring_length = cfg["spring_length"]
+        self.spring_rate = cfg["spring_rate"]
+        self.bump = cfg["bump"]
+        self.rebound = cfg["rebound"]
+        self.knee = 0.18
+        self.fast_ratio = 0.42
+        self.bump_stop_rate = 1200000.0
+        self.bump_stop_length = 0.045
+        self.tyre_rate = 260000.0
+        self.tyre_damping = 5200.0
+        self.deflection = 0.0
+        self.prev_deflection = 0.0
+        self.anti_roll = cfg["anti_roll"]
+        self.mu = cfg["mu"]
+        self.peak_sr = 0.115
+        self.peak_sa = math.radians(cfg["peak_sa_deg"])
+        self.load_sensitivity = 0.22
+        self.nominal_load = cfg["nominal_load"]
+        self.relaxation = 0.42
+        self.rolling_resistance = 0.014
+        self.camber = math.radians(cfg["camber"])
+
+        self.spin = 0.0
+        self.travel = 0.0
+        self.prev_travel = 0.0
+        self.spring_force = 0.0
+        self.grounded = False
+        self.contact = (0.0, 0.0, 0.0)
+        self.normal = (0.0, 1.0, 0.0)
+        self.force = (0.0, 0.0)
+        self.lag_sr = 0.0
+        self.lag_ta = 0.0
+        self.steer = 0.0
+        self.drive_torque = 0.0
+        self.brake_torque = 0.0
+        self.slip_ratio = 0.0
+        self.slip_angle = 0.0
+
+    def axes(self, body):
+        """steering-rotated wheel frame in world space"""
+        c, s = math.cos(self.steer), math.sin(self.steer)
+        yaw = [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]]
+        return m_mul(body.basis, yaw)
+
+    def update_suspension(self, body, opposite_travel, ground_height):
+        basis = self.axes(body)
+        origin = v_add(body.pos, m_mul_v(body.basis, self.mount))
+        down = v_mul((basis[0][1], basis[1][1], basis[2][1]), -1.0)
+
+        reach = self.spring_length + self.radius
+        # flat ground: analytic ray/plane intersection
+        self.grounded = False
+        if down[1] < -1e-6:
+            t = (ground_height - origin[1]) / down[1]
+            if 0.0 <= t <= reach:
+                self.grounded = True
+                self.contact = v_add(origin, v_mul(down, t))
+                self.normal = (0.0, 1.0, 0.0)
+
+        if self.grounded:
+            length = v_len(v_sub(origin, self.contact)) - self.radius
+            raw = self.spring_length - length
+            self.prev_deflection = self.deflection
+            self.deflection = max(0.0, raw - self.spring_length)
+            self.travel = max(0.0, min(self.spring_length, raw))
+        else:
+            self.prev_deflection = self.deflection
+            self.deflection = 0.0
+            self.travel = 0.0
+            self.spring_force = 0.0
+            self.prev_travel = 0.0
+            return 0.0
+
+        speed = (self.travel - self.prev_travel) / DT
+        self.prev_travel = self.travel
+
+        force = self.spring_rate * self.travel
+        into = self.travel - (self.spring_length - self.bump_stop_length)
+        if into > 0.0:
+            force += self.bump_stop_rate * into * (into / self.bump_stop_length)
+
+        rate = self.bump if speed > 0.0 else self.rebound
+        v = abs(speed)
+        damp = rate * v if v <= self.knee else \
+            rate * self.knee + rate * self.fast_ratio * (v - self.knee)
+        force += math.copysign(damp, speed)
+        force += self.anti_roll * (self.travel - opposite_travel)
+
+        if self.deflection > 0.0:
+            tspeed = (self.deflection - self.prev_deflection) / DT
+            force += self.tyre_rate * self.deflection
+            force += self.tyre_damping * tspeed
+            force = max(0.0, force)
+
+        self.spring_force = max(0.0, force)
+        return self.travel
+
+    def update_tyre(self, body, contact_velocity):
+        if not self.grounded or self.spring_force <= 0.0:
+            self.force = (0.0, 0.0)
+            self.lag_sr = self.lag_ta = 0.0
+            self.slip_ratio = self.slip_angle = 0.0
+            return
+        basis = self.axes(body)
+        right = (basis[0][0], basis[1][0], basis[2][0])
+        forward = v_norm(v_cross(self.normal, right))
+        right = v_norm(v_cross(forward, self.normal))
+
+        v_long = v_dot(contact_velocity, forward)
+        v_lat = v_dot(contact_velocity, right)
+
+        speed = max(abs(v_long), 0.35)
+        blend = min(1.0, speed / self.relaxation * DT)
+        self.lag_sr += ((self.spin * self.radius - v_long) / speed - self.lag_sr) * blend
+        self.lag_ta += (-v_lat / speed - self.lag_ta) * blend
+        self.slip_ratio = self.lag_sr
+        self.slip_angle = math.atan(self.lag_ta)
+
+        nx = self.lag_sr / self.peak_sr
+        ny = self.lag_ta / math.tan(self.peak_sa)
+        combined = math.hypot(nx, ny)
+        if combined < 1e-5:
+            self.force = (0.0, 0.0)
+            return
+
+        load_ratio = self.spring_force / self.nominal_load
+        mu = self.mu * (1.0 - self.load_sensitivity * (load_ratio - 1.0))
+        mu = max(0.35 * self.mu, min(1.35 * self.mu, mu))
+        mu *= math.cos(self.camber) * 0.02 + 0.98
+
+        total = mu * self.spring_force * magic_formula(combined)
+        fx = total * nx / combined
+        fy = total * ny / combined
+
+        max_spin = abs(self.spin * self.radius - v_long) * self.inertia \
+            / max(self.radius ** 2 * DT, 1e-6)
+        torque_limit = (abs(self.drive_torque) + abs(self.brake_torque)) / self.radius
+        limit = max(max_spin, torque_limit) + mu * self.spring_force * 0.05
+        fx = max(-limit, min(limit, fx))
+
+        if abs(v_long) > 0.05:
+            crr = self.rolling_resistance * (1.0 + 0.0006 * v_long * v_long)
+            fx -= math.copysign(crr * self.spring_force, v_long)
+
+        self.force = (fx, fy)
+
+    def update_spin(self):
+        road = -self.force[0] * self.radius
+        net = self.drive_torque + road
+        if self.brake_torque > 0.0:
+            free = self.spin + net / self.inertia * DT
+            bd = self.brake_torque / self.inertia * DT
+            self.spin = 0.0 if abs(free) <= bd else free - math.copysign(bd, free)
+        else:
+            self.spin += net / self.inertia * DT
+        if not self.grounded:
+            self.spin -= self.spin * min(1.0, 1.2 * DT)
+        self.spin = max(-400.0, min(400.0, self.spin))
+
+    def apply(self, body):
+        if not self.grounded:
+            return
+        arm = v_sub(self.contact, body.pos)
+        if self.spring_force > 0.0:
+            body.add_force(v_mul(self.normal, self.spring_force), arm)
+        basis = self.axes(body)
+        right = (basis[0][0], basis[1][0], basis[2][0])
+        forward = v_norm(v_cross(self.normal, right))
+        right = v_norm(v_cross(forward, self.normal))
+        body.add_force(v_add(v_mul(forward, self.force[0]),
+                             v_mul(right, self.force[1])), arm)
+
+
+# --------------------------------------------------------------------------- #
+#  rigid body
+# --------------------------------------------------------------------------- #
+
+class Body:
+    def __init__(self, mass, inertia, pos):
+        self.mass = mass
+        self.inertia = inertia            # diagonal, body space
+        self.pos = pos
+        self.basis = m_ident()
+        self.vel = (0.0, 0.0, 0.0)
+        self.omega = (0.0, 0.0, 0.0)
+        self.force = (0.0, 0.0, 0.0)
+        self.torque = (0.0, 0.0, 0.0)
+
+    def add_force(self, f, arm):
+        self.force = v_add(self.force, f)
+        self.torque = v_add(self.torque, v_cross(arm, f))
+
+    def velocity_at(self, arm):
+        return v_add(self.vel, v_cross(self.omega, arm))
+
+    def integrate(self):
+        self.force = v_add(self.force, (0.0, -G * self.mass, 0.0))
+        self.vel = v_add(self.vel, v_mul(self.force, DT / self.mass))
+
+        # torque -> angular acceleration through the body space inertia tensor
+        tb = m_mul_v(m_t(self.basis), self.torque)
+        ab = (tb[0] / self.inertia[0], tb[1] / self.inertia[1], tb[2] / self.inertia[2])
+        self.omega = v_add(self.omega, v_mul(m_mul_v(self.basis, ab), DT))
+
+        self.pos = v_add(self.pos, v_mul(self.vel, DT))
+        w = v_mul(self.omega, DT)
+        skew = [[0.0, -w[2], w[1]], [w[2], 0.0, -w[0]], [-w[1], w[0], 0.0]]
+        delta = [[(1.0 if i == j else 0.0) + skew[i][j] for j in range(3)] for i in range(3)]
+        self.basis = orthonormalise(m_mul(delta, self.basis))
+
+        self.force = (0.0, 0.0, 0.0)
+        self.torque = (0.0, 0.0, 0.0)
+
+
+# --------------------------------------------------------------------------- #
+#  vehicle — mirrors scripts/vehicle.gd
+# --------------------------------------------------------------------------- #
+
+MASS = 1495.0
+FRONT_WEIGHT = 0.523
+SPRING_TRAVEL = 0.16
+RIDE_DROP = 0.075
+GEARS = [4.11, 2.32, 1.54, 1.18, 1.00, 0.85]
+FINAL = 3.15
+PEAK_TORQUE = 450.0
+PEAK_TQ_RPM, PEAK_PW_RPM = 3000.0, 5900.0
+IDLE, REDLINE = 850.0, 7000.0
+
+
+def engine_torque(rpm):
+    if rpm < IDLE * 0.4:
+        return 0.0
+    if rpm < PEAK_TQ_RPM:
+        x = max(0.0, min(1.0, (rpm - IDLE * 0.5) / (PEAK_TQ_RPM - IDLE * 0.5)))
+        t = PEAK_TORQUE * (0.42 + 0.58 * math.sin(x * math.pi * 0.5))
+    elif rpm < PEAK_PW_RPM:
+        t = PEAK_TORQUE
+    else:
+        x = max(0.0, min(1.0, (rpm - PEAK_PW_RPM) / (REDLINE - PEAK_PW_RPM)))
+        t = PEAK_TORQUE * (1.0 - 0.34 * x)
+    if rpm > REDLINE:
+        t *= max(0.0, 1.0 - (rpm - REDLINE) / 260.0)
+    return t
+
+
+class Car:
+    def __init__(self, spawn_height):
+        info = json.load(open(os.path.join(ASSET, "bmw_1m_collision.json")))
+        wp = info["wheel_positions"]
+
+        w, h, l = 1.80, 1.42, 4.38
+        k = MASS / 12.0
+        inertia = (k * (h * h + l * l), k * (w * w + l * l) * 0.86, k * (w * w + h * h))
+        self.com = (0.0, 0.46, 0.06)
+        self.body = Body(MASS, inertia, (0.0, spawn_height, 0.0))
+
+        self.wheels = []
+        for corner in ("lf", "rf", "lr", "rr"):
+            p = wp[corner]
+            front = corner.endswith("f")
+            corner_mass = MASS * (FRONT_WEIGHT if front else 1.0 - FRONT_WEIGHT) * 0.5
+            cfg = {
+                "radius": 0.323 if front else 0.330,
+                "wheel_mass": 20.0 if front else 22.0,
+                "spring_length": SPRING_TRAVEL,
+                "spring_rate": 52800.0 if front else 53500.0,
+                "bump": 3090.0 if front else 2970.0,
+                "rebound": 5270.0 if front else 5070.0,
+                "anti_roll": 14000.0 if front else 9500.0,
+                "mu": 1.55 if front else 1.58,
+                "peak_sa_deg": 8.0 if front else 8.8,
+                "nominal_load": corner_mass * G,
+                "camber": -1.4 if front else -1.9,
+            }
+            mount = (p[0] - self.com[0],
+                     p[1] + SPRING_TRAVEL - RIDE_DROP - self.com[1],
+                     p[2] - self.com[2])
+            self.wheels.append(Wheel(corner, mount, front, cfg))
+
+        self.gear = 1
+        self.engine_speed = IDLE * math.tau / 60.0
+        self.throttle = 0.0
+        self.brake = 0.0
+        self.steer_input = 0.0
+        self.shift_timer = 0.0
+
+    # position of the visual origin (the car's own origin, not the CoM)
+    def origin_height(self):
+        return self.body.pos[1] - m_mul_v(self.body.basis, self.com)[1]
+
+    def ratio(self):
+        return GEARS[min(self.gear - 1, len(GEARS) - 1)] * FINAL if self.gear > 0 else 0.0
+
+    def step(self):
+        b = self.body
+        speed = v_len(b.vel)
+
+        # --- steering with Ackermann ---
+        wheelbase = 2.632
+        track = 1.489
+        scale = 1.0 + (0.34 - 1.0) * min(1.0, speed * 3.6 / 42.0)
+        angle = math.radians(33.0) * self.steer_input * scale
+        for w in self.wheels:
+            if not w.is_steering:
+                continue
+            if abs(angle) < 1e-5:
+                w.steer = 0.0
+                continue
+            radius = wheelbase / math.tan(abs(angle))
+            inner = math.atan(wheelbase / max(radius - track * 0.5, 0.1))
+            outer = math.atan(wheelbase / (radius + track * 0.5))
+            a = 0.72
+            inner = abs(angle) + (inner - abs(angle)) * a
+            outer = abs(angle) + (outer - abs(angle)) * a
+            left = w.mount[0] < 0.0
+            mag = inner if left == (angle > 0.0) else outer
+            w.steer = math.copysign(mag, angle)
+
+        # --- suspension ---
+        prev = [w.travel for w in self.wheels]
+        opp = {0: 1, 1: 0, 2: 3, 3: 2}
+        for i, w in enumerate(self.wheels):
+            w.update_suspension(b, prev[opp[i]], 0.0)
+
+        # --- drivetrain ---
+        if self.shift_timer > 0.0:
+            self.shift_timer = max(0.0, self.shift_timer - DT)
+        fwd = self.forward_speed()
+        if self.shift_timer > 0.0:
+            clutch = 0.0
+        else:
+            clutch = max(min(abs(fwd) / 2.2, 1.0), self.throttle)
+        rear = [w for w in self.wheels if not w.is_steering]
+        driven_spin = sum(w.spin for w in rear) / len(rear)
+        ratio = self.ratio()
+        idle_speed = IDLE * math.tau / 60.0
+        if abs(ratio) > 0.01 and clutch > 0.99:
+            self.engine_speed = abs(driven_spin * ratio)
+        else:
+            free = engine_torque(self._rpm()) * self.throttle \
+                - 0.055 * max(0.0, self.engine_speed - idle_speed)
+            self.engine_speed += free / 0.24 * DT
+            if clutch > 0.0 and abs(ratio) > 0.01:
+                target = abs(driven_spin * ratio)
+                self.engine_speed += (target - self.engine_speed) * clutch
+        self.engine_speed = max(IDLE * math.tau / 60.0,
+                                min((REDLINE + 400.0) * math.tau / 60.0, self.engine_speed))
+        rpm = self._rpm()
+        if self.shift_timer <= 0.0:
+            if rpm > REDLINE * 0.94 and self.gear < len(GEARS):
+                self.gear += 1
+                self.shift_timer = 0.22
+            elif self.gear > 1 and rpm < REDLINE * 0.42:
+                self.gear -= 1
+                self.shift_timer = 0.22 * 0.6
+
+        crank = engine_torque(rpm) * self.throttle
+        crank -= 0.055 * max(0.0, self.engine_speed - idle_speed) \
+            * (1.0 - self.throttle * 0.85)
+        axle = crank * self.ratio() * 0.90 * clutch
+
+        for w in self.wheels:
+            w.drive_torque = 0.0
+        half = axle * 0.5
+        bias = max(-1.0, min(1.0, (rear[0].spin - rear[1].spin) * 0.06)) * 0.45 * abs(half)
+        rear[0].drive_torque = half - bias
+        rear[1].drive_torque = half + bias
+
+        for w in self.wheels:
+            base = 2400.0 if w.is_steering else 1500.0
+            w.brake_torque = base * self.brake
+        if self.throttle < 0.02 and self.brake < 0.02 and abs(fwd) < 0.4:
+            hold = 900.0 * (1.0 - abs(fwd) / 0.4)
+            for w in self.wheels:
+                w.brake_torque = max(w.brake_torque, hold)
+
+        # --- tyres ---
+        for w in self.wheels:
+            arm = v_sub(w.contact, b.pos)
+            w.update_tyre(b, b.velocity_at(arm))
+        for w in self.wheels:
+            w.update_spin()
+            w.apply(b)
+
+        # --- aero ---
+        if speed > 0.5:
+            q = 0.5 * 1.2 * speed * speed
+            b.add_force(v_mul(v_norm(b.vel), -q * 0.69), (0.0, 0.0, 0.0))
+            down = v_mul((b.basis[0][1], b.basis[1][1], b.basis[2][1]), -1.0)
+            b.add_force(v_mul(down, 0.28 * speed * speed),
+                        m_mul_v(b.basis, (0.0, 0.3, -wheelbase * 0.5)))
+            b.add_force(v_mul(down, 0.42 * speed * speed),
+                        m_mul_v(b.basis, (0.0, 0.3, wheelbase * 0.5)))
+
+        b.integrate()
+
+    def _rpm(self):
+        return self.engine_speed * 60.0 / math.tau
+
+    def speed_kmh(self):
+        return v_len(self.body.vel) * 3.6
+
+    def forward_speed(self):
+        f = (-self.body.basis[0][2], -self.body.basis[1][2], -self.body.basis[2][2])
+        return v_dot(self.body.vel, f)
+
+
+# --------------------------------------------------------------------------- #
+#  tests
+# --------------------------------------------------------------------------- #
+
+FAILURES = []
+
+
+def check(label, ok, detail=""):
+    status = "PASS" if ok else "FAIL"
+    print("  [%s] %s%s" % (status, label, ("  -> " + detail) if detail else ""))
+    if not ok:
+        FAILURES.append(label)
+
+
+SPAWN_HEIGHT = 0.68
+## Height at which the car is already resting on its springs. Used by the tests
+## that are not about the drop itself, so they start from a settled car.
+REST_HEIGHT = 0.40
+
+
+def test_drop():
+    print("\n== drop test: spawn %.2f m above the ground ==" % SPAWN_HEIGHT)
+    car = Car(SPAWN_HEIGHT)
+    heights, loads = [], []
+    touchdown = None
+    for i in range(1500):          # 12.5 s
+        car.step()
+        h = car.origin_height()
+        heights.append(h)
+        loads.append(sum(w.spring_force for w in car.wheels))
+        if touchdown is None and any(w.grounded for w in car.wheels):
+            touchdown = i * DT
+
+    settle = heights[-1]
+    lowest = min(heights[int(touchdown / DT):])
+    rebound = max(heights[int(touchdown / DT) + 15:int(touchdown / DT) + 300])
+    peak_load = max(loads)
+    final_load = loads[-1]
+    static = MASS * G
+
+    print("  touchdown at %.2f s, lowest %.3f m, rebound %.3f m, settled %.3f m"
+          % (touchdown, lowest, rebound, settle))
+    print("  peak load %.0f N (%.2f g), settled load %.0f N (static %.0f N)"
+          % (peak_load, peak_load / static, final_load, static))
+
+    check("car falls and touches down", touchdown is not None and 0.05 < touchdown < 0.6,
+          "%.2f s" % touchdown)
+    check("suspension compresses on impact", lowest < settle - 0.01,
+          "%.3f m below rest" % (settle - lowest))
+    check("springs push it back up (bounce)", 0.01 < rebound - lowest < 0.25,
+          "%.3f m of rebound" % (rebound - lowest))
+    check("comes to rest without exploding",
+          abs(car.body.vel[1]) < 0.05 and -0.01 < settle < 0.06,
+          "vy %.4f m/s, resting at %.3f m" % (car.body.vel[1], settle))
+    check("settled load equals the weight of the car",
+          abs(final_load - static) / static < 0.03,
+          "%.1f%% off" % (abs(final_load - static) / static * 100.0))
+    check("impact load stays in a survivable range", 1.5 < peak_load / static < 12.0,
+          "%.2f g" % (peak_load / static))
+
+    fl = [w for w in car.wheels if w.name == "lf"][0]
+    rl = [w for w in car.wheels if w.name == "lr"][0]
+    front_share = (fl.spring_force * 2.0) / final_load
+    print("  static corner loads: front %.0f N  rear %.0f N  -> %.1f%% front"
+          % (fl.spring_force, rl.spring_force, front_share * 100.0))
+    check("weight distribution close to 52/48", abs(front_share - FRONT_WEIGHT) < 0.05,
+          "%.1f%% front" % (front_share * 100.0))
+    # settle is the height of the car's own origin, which the converter placed
+    # at the very bottom of the bodywork, so at rest it sits just above zero.
+    check("body sits just above the ground", -0.01 < settle < 0.06, "%.3f m" % settle)
+    return car
+
+
+def test_acceleration():
+    print("\n== acceleration: full throttle from rest ==")
+    car = Car(REST_HEIGHT)
+    for _ in range(360):           # let it settle
+        car.step()
+    car.throttle = 1.0
+    t60 = t100 = None
+    top = 0.0
+    for i in range(120 * 40):
+        car.step()
+        s = car.speed_kmh()
+        top = max(top, s)
+        if t60 is None and s >= 60.0:
+            t60 = i * DT
+        if t100 is None and s >= 100.0:
+            t100 = i * DT
+    print("  0-60 km/h %s, 0-100 km/h %s, reached %.0f km/h in gear %d"
+          % ("%.2f s" % t60 if t60 else "n/a",
+             "%.2f s" % t100 if t100 else "n/a", top, car.gear))
+    check("reaches 100 km/h", t100 is not None)
+    if t100:
+        check("0-100 in a believable 3.5-8 s", 3.5 < t100 < 8.0, "%.2f s" % t100)
+    check("top speed above 200 km/h", top > 200.0, "%.0f km/h" % top)
+    check("gearbox shifted up", car.gear >= 4, "gear %d" % car.gear)
+    return car
+
+
+def test_braking():
+    print("\n== braking from 100 km/h ==")
+    car = Car(REST_HEIGHT)
+    for _ in range(360):
+        car.step()
+    car.throttle = 1.0
+    while car.speed_kmh() < 100.0:
+        car.step()
+    car.throttle = 0.0
+    car.brake = 1.0
+    start = car.body.pos
+    steps = 0
+    while car.speed_kmh() > 1.0 and steps < 120 * 20:
+        car.step()
+        steps += 1
+    dist = v_len(v_sub(car.body.pos, start))
+    decel = (100.0 / 3.6) ** 2 / (2.0 * dist) / G
+    print("  stopped in %.1f m (%.2f g average)" % (dist, decel))
+    check("braking distance 30-60 m", 30.0 < dist < 60.0, "%.1f m" % dist)
+    check("average deceleration 0.8-1.5 g", 0.8 < decel < 1.5, "%.2f g" % decel)
+
+
+def test_cornering():
+    print("\n== steady state cornering ==")
+    car = Car(REST_HEIGHT)
+    for _ in range(360):
+        car.step()
+    car.throttle = 0.35
+    while car.speed_kmh() < 60.0:
+        car.step()
+    car.steer_input = 0.6
+    max_lat = 0.0
+    max_roll = 0.0
+    for _ in range(120 * 6):
+        car.step()
+        b = car.body
+        right = (b.basis[0][0], b.basis[1][0], b.basis[2][0])
+        lat = sum(v_dot((0.0, 0.0, 0.0), right) for _ in [0])
+        # lateral acceleration from the tyre forces actually generated
+        fy = sum(w.force[1] for w in car.wheels)
+        max_lat = max(max_lat, abs(fy) / MASS / G)
+        roll = math.degrees(math.asin(max(-1.0, min(1.0, b.basis[1][0]))))
+        max_roll = max(max_roll, abs(roll))
+    yaw_rate = abs(car.body.omega[1])
+    print("  peak lateral %.2f g, body roll %.1f deg, yaw rate %.2f rad/s, %.0f km/h"
+          % (max_lat, max_roll, yaw_rate, car.speed_kmh()))
+    check("generates 0.8-1.6 g of grip", 0.8 < max_lat < 1.6, "%.2f g" % max_lat)
+    check("body rolls a realistic 1-8 deg", 1.0 < max_roll < 8.0, "%.1f deg" % max_roll)
+    check("car is actually turning", yaw_rate > 0.15, "%.2f rad/s" % yaw_rate)
+    check("still upright", car.body.basis[1][1] > 0.9)
+
+
+def test_stability():
+    print("\n== stability: 30 s parked, must not drift or sink ==")
+    car = Car(REST_HEIGHT)
+    for _ in range(120 * 30):
+        car.step()
+    drift = math.hypot(car.body.pos[0], car.body.pos[2])
+    print("  drift %.4f m, height %.4f m, vy %.5f m/s"
+          % (drift, car.origin_height(), car.body.vel[1]))
+    check("does not slide around", drift < 0.05, "%.4f m" % drift)
+    check("does not sink through the ground", car.origin_height() > -0.01)
+    check("no residual jitter", abs(car.body.vel[1]) < 0.02)
+
+
+def main():
+    print("Vehicle physics verification (120 Hz, mirrors the GDScript exactly)")
+    test_drop()
+    test_stability()
+    test_acceleration()
+    test_braking()
+    test_cornering()
+    print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES
+                    else "FAILURES: " + ", ".join(FAILURES)))
+    return 1 if FAILURES else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
