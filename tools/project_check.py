@@ -589,6 +589,133 @@ def check_frame_rate_control():
           is not None)
 
 
+def check_texture_imports():
+    """Every texture must ship a .import that matches how it is used.
+
+    Without one, the editor prints two lines per texture on a fresh checkout:
+
+        <file>: текстура используется как карта нормалей в 3D...
+        <file>: текстура используется как карта шероховатости в 3D...
+
+    resource_importer_texture.cpp:110-131 emits those exactly when a texture
+    is used as a normal map while its .import still says
+    compress/normal_map = 0, or used for roughness while roughness/mode = 0.
+    The project's old [importer_defaults] block set both of those for ALL
+    textures, so the setting meant to silence the messages was producing
+    them - 18 pairs of them.
+
+    Raising normal_map project-wide is not the fix either: red-green
+    compression discards the blue channel, which would wreck the albedo maps.
+    editor_file_system.cpp:2435-2459 shows importer_defaults are only merged
+    in when a file has no .import of its own, so per-file .import wins.
+    """
+    print("\n== texture import settings ==")
+    text = open(os.path.join(ROOT, "project.godot")).read()
+    live = "\n".join(l for l in text.splitlines() if not l.startswith(";"))
+    check("the blanket importer_defaults block is gone",
+          "[importer_defaults]" not in live,
+          "it forces the same settings onto every texture")
+
+    gltf = json.load(open(os.path.join(ROOT, "assets", "car", "bmw_1m.gltf")))
+    images = [i.get("uri", "") for i in gltf.get("images", [])]
+    textures = [t.get("source") for t in gltf.get("textures", [])]
+    normals = set()
+    for mat in gltf.get("materials", []):
+        if "normalTexture" in mat:
+            normals.add(os.path.basename(
+                images[textures[mat["normalTexture"]["index"]]]))
+
+    tex_dir = os.path.join(ROOT, "assets", "car", "textures")
+    files = [f for f in sorted(os.listdir(tex_dir))
+             if f.lower().endswith((".png", ".jpg", ".jpeg"))]
+    missing = [f for f in files
+               if not os.path.exists(os.path.join(tex_dir, f + ".import"))]
+    print("  %d textures, %d used as normal maps in the glTF"
+          % (len(files), len(normals)))
+    check("every texture has a .import", not missing,
+          "%d without one: %s" % (len(missing), ", ".join(missing[:4])))
+
+    wrong = []
+    for name in files:
+        path = os.path.join(tex_dir, name + ".import")
+        if not os.path.exists(path):
+            continue
+        body = open(path).read()
+        m = re.search(r"compress/normal_map=(\d+)", body)
+        setting = int(m.group(1)) if m else -1
+        want = 1 if name in normals else 2
+        if setting != want:
+            wrong.append("%s=%d(want %d)" % (name, setting, want))
+    check("each .import matches the texture's role in the glTF", not wrong,
+          ", ".join(wrong[:4]))
+
+    # Role must come from the glTF, not from the file name: RIM_OS.png and
+    # Fanali_Anteriori_OS.png are normal maps despite the _OS suffix.
+    tool = open(os.path.join(ROOT, "tools", "make_import_files.py")).read()
+    check("roles are read from the glTF, not guessed from names",
+          "roles_from_gltf" in tool and "normalTexture" in tool)
+
+
+def check_lod_warning_is_not_ours():
+    """The 'non-finite normal in LOD generation' notice is not an asset fault.
+
+    importer_mesh.cpp:513-521 walks `new_indices` - the OUTPUT of
+    meshoptimizer's simplifier - and skips any triangle whose area came out
+    zero. Simplification collapses edges, so it can create such a triangle
+    from a perfectly good input. It is WARN_PRINT_ONCE, so it appears once
+    per run however many faces are skipped.
+
+    This check proves the input is clean, which is the part the project can
+    actually be responsible for.
+    """
+    print("\n== LOD warning: assets must be clean ==")
+    import struct as _struct
+    import glob as _glob
+
+    fmt = {5126: "f", 5125: "I", 5123: "H", 5121: "B"}
+    ncomp = {"VEC3": 3, "VEC2": 2, "VEC4": 4, "SCALAR": 1}
+    total = degenerate = 0
+
+    for path in sorted(_glob.glob(os.path.join(ROOT, "assets", "*", "*.gltf"))):
+        bin_path = path[:-5] + ".bin"
+        if not os.path.exists(bin_path):
+            continue
+        gltf = json.load(open(path))
+        blob = open(bin_path, "rb").read()
+
+        def read(index):
+            acc = gltf["accessors"][index]
+            view = gltf["bufferViews"][acc["bufferView"]]
+            f = fmt[acc["componentType"]]
+            n = ncomp[acc["type"]]
+            off = view.get("byteOffset", 0) + acc.get("byteOffset", 0)
+            stride = view.get("byteStride") or _struct.calcsize(f) * n
+            return [_struct.unpack_from("<" + f * n, blob, off + i * stride)
+                    for i in range(acc["count"])]
+
+        for mesh in gltf["meshes"]:
+            for prim in mesh["primitives"]:
+                if "indices" not in prim:
+                    continue
+                pos = read(prim["attributes"]["POSITION"])
+                idx = [i[0] for i in read(prim["indices"])]
+                for t in range(0, len(idx) - 2, 3):
+                    a, b, c = pos[idx[t]], pos[idx[t + 1]], pos[idx[t + 2]]
+                    u = [b[k] - a[k] for k in range(3)]
+                    w = [c[k] - a[k] for k in range(3)]
+                    cross = (u[1] * w[2] - u[2] * w[1],
+                             u[2] * w[0] - u[0] * w[2],
+                             u[0] * w[1] - u[1] * w[0])
+                    total += 1
+                    if sum(x * x for x in cross) == 0.0:
+                        degenerate += 1
+
+    print("  %s triangles across every glTF, %d with zero area"
+          % (format(total, ","), degenerate))
+    check("no shipped mesh contains a degenerate face", degenerate == 0,
+          "%d degenerate faces" % degenerate)
+
+
 def check_menus():
     print("\n== menus ==")
     def source(name):
@@ -697,6 +824,8 @@ def main():
     check_no_tiny_colliders()
     check_fps_counter()
     check_frame_rate_control()
+    check_texture_imports()
+    check_lod_warning_is_not_ours()
     check_menus()
     check_camera_smoothing()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES else "FAILURES: " + ", ".join(FAILURES)))
