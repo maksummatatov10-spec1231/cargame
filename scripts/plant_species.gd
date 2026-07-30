@@ -44,6 +44,18 @@ extends Resource
 ## stay planted while canopies move.
 @export var wind_anchor := 0.6
 @export_range(0.0, 1.0) var roughness := 0.9
+## Albedo texture. Empty means the flat tint is used instead, which is what
+## every small plant wants - a sampler costs a fetch per pixel and a 0.2 m
+## plant is a few pixels tall.
+##
+## The tree meshes tile their UVs roughly ten times up the trunk, so the
+## texture must be seamless; the two BarkDecidious scans recovered from
+## Textures.rar are (the _S suffix means seamless).
+@export_file("*.jpg", "*.png") var texture_path := ""
+## Brightness multiplier applied on top of the texture. The bark scans are
+## darker than the flat tint they replace, so the forest would go muddy
+## without it.
+@export var texture_boost := 1.9
 ## Render both faces of every polygon.
 ##
 ## Needed for flat foliage cards - a fern is a single-sided plane and vanishes

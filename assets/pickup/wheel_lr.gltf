@@ -1,7 +1,7 @@
 {
  "asset": {
   "version": "2.0",
-  "generator": "cargame pickup_to_gltf.py"
+  "generator": "cargame defender_to_gltf.py"
  },
  "scene": 0,
  "scenes": [
@@ -29,22 +29,45 @@
      },
      "indices": 3,
      "material": 0
+    },
+    {
+     "attributes": {
+      "POSITION": 4,
+      "NORMAL": 5,
+      "TEXCOORD_0": 6
+     },
+     "indices": 7,
+     "material": 1
     }
    ]
   }
  ],
  "materials": [
   {
-   "name": "wheel_lr_mat",
+   "name": "Wheel_BRC",
    "pbrMetallicRoughness": {
     "baseColorFactor": [
-     0.07,
-     0.07,
-     0.075,
+     0.055,
+     0.055,
+     0.06,
      1.0
     ],
     "metallicFactor": 0.0,
-    "roughnessFactor": 0.9
+    "roughnessFactor": 0.95
+   },
+   "doubleSided": false
+  },
+  {
+   "name": "Wheel_ARO",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.66,
+     0.68,
+     0.71,
+     1.0
+    ],
+    "metallicFactor": 0.95,
+    "roughnessFactor": 0.28
    },
    "doubleSided": false
   }
@@ -53,7 +76,7 @@
   {
    "bufferView": 0,
    "componentType": 5126,
-   "count": 8074,
+   "count": 6155,
    "type": "VEC3",
    "min": [
     -0.2189730703130369,
@@ -69,19 +92,53 @@
   {
    "bufferView": 1,
    "componentType": 5126,
-   "count": 8074,
+   "count": 6155,
    "type": "VEC3"
   },
   {
    "bufferView": 2,
    "componentType": 5126,
-   "count": 8074,
+   "count": 6155,
    "type": "VEC2"
   },
   {
    "bufferView": 3,
    "componentType": 5123,
-   "count": 49503,
+   "count": 37725,
+   "type": "SCALAR"
+  },
+  {
+   "bufferView": 4,
+   "componentType": 5126,
+   "count": 2029,
+   "type": "VEC3",
+   "min": [
+    -0.20495848014333132,
+    -0.2900052737493593,
+    -0.2876729667186735
+   ],
+   "max": [
+    0.20705679451030976,
+    0.2864595376098061,
+    0.2887917757034304
+   ]
+  },
+  {
+   "bufferView": 5,
+   "componentType": 5126,
+   "count": 2029,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 6,
+   "componentType": 5126,
+   "count": 2029,
+   "type": "VEC2"
+  },
+  {
+   "bufferView": 7,
+   "componentType": 5123,
+   "count": 11778,
    "type": "SCALAR"
   }
  ],
@@ -89,32 +146,56 @@
   {
    "buffer": 0,
    "byteOffset": 0,
-   "byteLength": 96888,
+   "byteLength": 73860,
    "target": 34962
   },
   {
    "buffer": 0,
-   "byteOffset": 96888,
-   "byteLength": 96888,
+   "byteOffset": 73860,
+   "byteLength": 73860,
    "target": 34962
   },
   {
    "buffer": 0,
-   "byteOffset": 193776,
-   "byteLength": 64592,
+   "byteOffset": 147720,
+   "byteLength": 49240,
    "target": 34962
   },
   {
    "buffer": 0,
-   "byteOffset": 258368,
-   "byteLength": 99006,
+   "byteOffset": 196960,
+   "byteLength": 75450,
+   "target": 34963
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 272412,
+   "byteLength": 24348,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 296760,
+   "byteLength": 24348,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 321108,
+   "byteLength": 16232,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 337340,
+   "byteLength": 23556,
    "target": 34963
   }
  ],
  "buffers": [
   {
    "uri": "wheel_lr.bin",
-   "byteLength": 357374
+   "byteLength": 360896
   }
  ]
 }

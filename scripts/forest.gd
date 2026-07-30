@@ -130,6 +130,37 @@ void fragment() {
 }
 """
 
+## Fragment shader for species that have a real texture.
+##
+## Only the tree bands use this. Everything else keeps the flat-tint version,
+## because a sampler costs a texture fetch per pixel and the small plants are
+## a few pixels tall - there is nothing to see.
+##
+## The bark is sampled with the mesh's own UVs, which tile about ten times up
+## the trunk (v runs from 2.0 down to -9.86). Both bark files are seamless
+## scans, so the tiling does not show a join.
+const SHADER_TAIL_TEXTURED := """
+}
+
+void fragment() {
+	vec4 tex = texture(albedo_texture, UV);
+	// The tint still multiplies through, so the per-species colour variation
+	// that made the three distance bands blend together is preserved.
+	ALBEDO = tex.rgb * tint * (0.92 + 0.08 * sway_amount) * texture_boost;
+	ROUGHNESS = roughness_value;
+	SPECULAR = 0.15;
+	BACKLIGHT = vec3(0.22, 0.28, 0.14);
+}
+"""
+
+## Declared only by the textured variant.
+const SHADER_TEXTURE_UNIFORMS := """
+uniform sampler2D albedo_texture : source_color, filter_linear_mipmap, repeat_enable;
+// The bark scans are darker than the flat tint they replace, so without this
+// the forest goes muddy. Tuned so the average brightness matches.
+uniform float texture_boost = 1.9;
+"""
+
 ## The default set of species, used when the `species` list below is empty.
 ##
 ## These are only defaults now. The live list is an exported array of
@@ -146,12 +177,14 @@ const DEFAULT_SPECIES := [
 		"max_slope": 0.34, "tint": Color(0.30, 0.40, 0.20), "solid": true,
 		"collision_radius": 0.55, "wind_anchor": 1.2, "wind": 0.035,
 		"max_distance": 80.0, "cull_distance": 170.0, "cast_shadows": true,
-		"mesh_height": 6.87, "two_sided": false},
+		"mesh_height": 6.87, "two_sided": false,
+		"texture_path": "res://assets/forest/textures/bark_a.jpg"},
 	{"mesh_name": "tree_lod", "count": 180, "scale_min": 0.85, "scale_max": 1.5,
 		"max_slope": 0.34, "tint": Color(0.29, 0.39, 0.19), "solid": true,
 		"collision_radius": 0.55, "wind_anchor": 1.2, "wind": 0.035,
 		"min_distance": 80.0, "max_distance": 170.0, "cull_distance": 240.0,
-		"lod_bias": 2.0, "mesh_height": 6.84, "two_sided": false},
+		"lod_bias": 2.0, "mesh_height": 6.84, "two_sided": false,
+		"texture_path": "res://assets/forest/textures/bark_b.jpg"},
 	{"mesh_name": "tree_far", "count": 220, "scale_min": 0.85, "scale_max": 1.5,
 		"max_slope": 0.34, "tint": Color(0.28, 0.38, 0.19), "solid": false,
 		"wind_anchor": 1.2, "wind": 0.03, "min_distance": 170.0,
@@ -599,11 +632,13 @@ func _is_crushable(entry: PlantSpecies) -> bool:
 func _shader_for(entry: PlantSpecies) -> Shader:
 	var crushable := _is_crushable(entry)
 	var cull := "cull_disabled" if entry.two_sided else "cull_back"
+	var textured := entry.texture_path != ""
 	var code := SHADER_HEADER % cull
 	code += SHADER_CRUSH_UNIFORMS if crushable else ""
+	code += SHADER_TEXTURE_UNIFORMS if textured else ""
 	code += SHADER_UNIFORMS
 	code += SHADER_CRUSH if crushable else ""
-	code += SHADER_TAIL
+	code += SHADER_TAIL_TEXTURED if textured else SHADER_TAIL
 
 	if _shader_cache.has(code):
 		return _shader_cache[code]
@@ -622,6 +657,13 @@ func _make_material(entry: PlantSpecies) -> ShaderMaterial:
 	mat.set_shader_parameter("anchor_height", entry.wind_anchor)
 	mat.set_shader_parameter("wind_speed", _rng.randf_range(0.9, 1.4))
 	mat.set_shader_parameter("roughness_value", entry.roughness)
+	if entry.texture_path != "":
+		var tex := load(entry.texture_path) as Texture2D
+		if tex != null:
+			mat.set_shader_parameter("albedo_texture", tex)
+			mat.set_shader_parameter("texture_boost", entry.texture_boost)
+		else:
+			push_warning("Forest: cannot load %s" % entry.texture_path)
 	return mat
 
 

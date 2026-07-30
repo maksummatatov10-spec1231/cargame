@@ -1,7 +1,7 @@
 {
  "asset": {
   "version": "2.0",
-  "generator": "cargame pickup_to_gltf.py"
+  "generator": "cargame defender_to_gltf.py"
  },
  "scene": 0,
  "scenes": [
@@ -35,16 +35,16 @@
  ],
  "materials": [
   {
-   "name": "hub_lf_mat",
+   "name": "Spring",
    "pbrMetallicRoughness": {
     "baseColorFactor": [
-     0.42,
-     0.44,
-     0.48,
+     0.2,
+     0.16,
+     0.14,
      1.0
     ],
-    "metallicFactor": 0.45,
-    "roughnessFactor": 0.35
+    "metallicFactor": 0.7,
+    "roughnessFactor": 0.6
    },
    "doubleSided": false
   }

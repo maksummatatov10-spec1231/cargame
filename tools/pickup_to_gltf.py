@@ -318,6 +318,10 @@ def main():
     src, out_dir = sys.argv[1], sys.argv[2]
     os.makedirs(out_dir, exist_ok=True)
     models, geos, geo_model, model_mats = read_scene(src)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    # The pickup and the Defender need identical material handling, so the
+    # writer and the classifier live in one place rather than being copied.
+    from defender_to_gltf import write_gltf, BODY_COLOUR  # noqa: E402
 
     wheel_of = {}
     for corner, names in WHEEL_MESHES.items():
@@ -339,7 +343,12 @@ def main():
         if not tris:
             continue
         group = wheel_of.get(name, "body")
-        groups.setdefault(group, []).extend(tris)
+        # Bucket by material as well as by part, so each material can become
+        # its own primitive with its own colour. The pickup's material names
+        # are descriptive - Paint_base, Wheel_ARO, Silver_detail, Car_ESC -
+        # which is exactly what the classifier needs.
+        mat_name = (model_mats.get(mid) or [""])[0]
+        groups.setdefault(group, {}).setdefault(mat_name, []).extend(tris)
         for tri in tris:
             for p, _n, _t in tri:
                 lowest = min(lowest, p[1])
@@ -349,7 +358,8 @@ def main():
     print("lifting model by %.3f m so the tyres touch the ground" % lift)
 
     pivots = {}
-    for group, tris in groups.items():
+    for group, buckets in groups.items():
+        tris = [t for bucket in buckets.values() for t in bucket]
         xs = [p[0] for tri in tris for p, _n, _t in tri]
         ys = [p[1] + lift for tri in tris for p, _n, _t in tri]
         zs = [p[2] for tri in tris for p, _n, _t in tri]
@@ -368,32 +378,47 @@ def main():
             pivots[h] = pivots[w]
 
     written = {}
-    for group, tris in groups.items():
+    for group, buckets in groups.items():
         px, py, pz = pivots[group]
-        moved = []
-        for tri in tris:
-            moved.append(tuple(((p[0] - px, p[1] + lift - py, p[2] - pz), n, t)
-                               for p, n, t in tri))
         if group == "body":
-            pos, nrm, uv, idx = cluster(moved, BODY_CELL)
+            cell = BODY_CELL
         elif group.startswith("wheel_"):
-            pos, nrm, uv, idx = cluster(moved, WHEEL_CELL)
+            cell = WHEEL_CELL
         else:
-            pos, nrm, uv, idx = cluster(moved, HUB_CELL)
-        if not idx:
+            cell = HUB_CELL
+
+        parts = []
+        total_v = total_t = 0
+        for mat_name, tris in sorted(buckets.items(),
+                                     key=lambda kv: -len(kv[1])):
+            moved = [tuple(((p[0] - px, p[1] + lift - py, p[2] - pz), n, t)
+                           for p, n, t in tri) for tri in tris]
+            pos, nrm, uv, idx = cluster(moved, cell)
+            if not idx:
+                continue
+            parts.append((mat_name, (0.6, 0.6, 0.6), 16.0, pos, nrm, uv, idx))
+            total_v += len(pos) // 3
+            total_t += len(idx) // 3
+        if not parts:
             continue
-        write_gltf(group, pos, nrm, uv, idx, out_dir)
-        written[group] = (len(pos) // 3, len(idx) // 3)
-        print("%-12s %7d verts %7d tris  pivot (%.3f, %.3f, %.3f)"
-              % (group, len(pos) // 3, len(idx) // 3, px, py, pz))
+        all_pos = [v for p in parts for v in p[3]]
+        extent = tuple(max(all_pos[i::3]) - min(all_pos[i::3])
+                       for i in range(3))
+        n_prims = write_gltf(group, parts, out_dir, BODY_COLOUR, extent)
+        written[group] = (total_v, total_t)
+        print("%-12s %7d verts %7d tris  %2d materials  pivot (%.3f, %.3f, %.3f)"
+              % (group, total_v, total_t, n_prims, px, py, pz))
 
     # Collision: slab decomposition of the body shell, same approach as the
     # BMW. The interior is excluded by taking only the outermost points in
     # each slab, so the hulls hug the bodywork.
+    # groups["body"] is now {material: [tri, ...]}, so walk the buckets. The
+    # hull covers the whole shell regardless of material, as before.
     body_pts = []
-    for tri in groups.get("body", []):
-        for p, _n, _t in tri:
-            body_pts.append((p[0], p[1] + lift, p[2]))
+    for bucket in groups.get("body", {}).values():
+        for tri in bucket:
+            for p, _n, _t in tri:
+                body_pts.append((p[0], p[1] + lift, p[2]))
     hulls = slab_hulls(body_pts, 9)
 
     meta = {

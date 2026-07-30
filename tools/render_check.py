@@ -413,6 +413,105 @@ def test_performance():
     check("no full-scene GI passes are enabled", not heavy, ", ".join(heavy))
 
 
+def test_vehicle_materials():
+    """Every vehicle must have more than one material.
+
+    The Defender and the pickup rendered as featureless blue-grey blocks for
+    a long time. Cause: both converters hard-coded a single material and
+    threw away everything the FBX knew. The Defender ships 70 materials and
+    the pickup 45, each mesh using exactly one of them
+    (LayerElementMaterial mapping is AllSame), so the information was there
+    the whole time.
+    """
+    print("\n== vehicle materials ==")
+    for label, path in (("BMW", "car/bmw_1m.gltf"),
+                        ("Defender", "defender/body.gltf"),
+                        ("pickup", "pickup/body.gltf")):
+        gltf = json.load(open(os.path.join(ROOT, "assets", path)))
+        mats = gltf.get("materials", [])
+        prims = sum(len(m["primitives"]) for m in gltf["meshes"])
+
+        # Distinct appearances, not just distinct material entries - two
+        # materials with identical colours look like one.
+        looks = set()
+        glass = 0
+        for m in mats:
+            pbr = m.get("pbrMetallicRoughness", {})
+            base = tuple(round(c, 3) for c in pbr.get("baseColorFactor",
+                                                      [1, 1, 1, 1]))
+            looks.add((base, round(pbr.get("metallicFactor", 0.0), 2)))
+            if base[3] < 0.9:
+                glass += 1
+        textured = sum(1 for m in mats
+                       if "baseColorTexture" in m.get("pbrMetallicRoughness", {}))
+        print("  %-9s %3d materials, %3d primitives, %2d distinct looks, "
+              "%d textured, %d transparent"
+              % (label, len(mats), prims, len(looks), textured, glass))
+
+        check("  %s has more than one material" % label, len(mats) > 1,
+              "only %d - the whole vehicle is one flat colour" % len(mats))
+        check("  %s has several distinct surfaces" % label, len(looks) >= 3,
+              "only %d distinct looks" % len(looks))
+        check("  %s is drawn as several primitives" % label, prims > 1,
+              "%d primitive" % prims)
+        # A vehicle with no glazing at all means the classifier missed it.
+        if label != "BMW":
+            check("  %s has glazing" % label, glass > 0,
+                  "no transparent material - the windows are solid")
+
+
+def test_tree_textures():
+    """The trees must not be flat untextured colour.
+
+    Textures.rar carries two seamless bark scans. The tree meshes tile their
+    UVs about ten times up the trunk (v runs 2.0 down to -9.86), which is
+    exactly what a seamless bark texture is for, so they were usable all
+    along.
+    """
+    print("\n== tree textures ==")
+    forest = open(os.path.join(ROOT, "scripts", "forest.gd")).read()
+
+    check("species can carry a texture", "texture_path" in
+          open(os.path.join(ROOT, "scripts", "plant_species.gd")).read())
+    check("the shader has a textured variant",
+          "SHADER_TAIL_TEXTURED" in forest)
+    check("the sampler is only declared when used",
+          "SHADER_TEXTURE_UNIFORMS if textured else" in forest)
+    check("the texture is bound to the material",
+          'set_shader_parameter("albedo_texture"' in forest)
+
+    table = re.search(r"const DEFAULT_SPECIES := \[(.*?)\n\]", forest, re.S)
+    # Parse each {...} entry separately and require a non-empty res:// path.
+    # A looser `"mesh_name": "(\w+)"[^{]*?"texture_path"` matched across
+    # entry boundaries AND counted `"texture_path": ""` as textured, so it
+    # passed on a deliberately broken table. Verified by breaking it.
+    textured = [name for name, body in
+                re.findall(r'\{"mesh_name": "(\w+)"(.*?)\},',
+                           table.group(1), re.S)
+                if '"texture_path": "res://' in body] if table else []
+    print("  textured species: %s" % (", ".join(textured) or "NONE"))
+    # Check the near band by name. Testing `"tree" in textured` was too loose:
+    # it still passed when only tree_lod kept its texture, so the full-detail
+    # tree - the one actually in front of the player - could go bare.
+    check("the full-detail tree is textured", "tree" in set(textured),
+          "the near tree band has no texture")
+    check("the mid tree band is textured", "tree_lod" in set(textured),
+          "tree_lod has no texture")
+
+    for name in textured:
+        for path in re.findall(r'"texture_path": "res://([^"]+)"',
+                               table.group(1)):
+            full = os.path.join(ROOT, path)
+            check("  %s exists" % os.path.basename(path),
+                  os.path.exists(full), "missing")
+
+    # Small plants must NOT be textured - a sampler per pixel on a plant a
+    # few pixels tall is pure cost.
+    for small in ("grass_tuft", "daisy", "grass_fine"):
+        check("  %s stays untextured" % small, small not in textured,
+              "a sampler on a plant this small is wasted")
+
+
 def test_dirt_road():
     """The dirt road must be a real, drivable, zero-cost feature.
 
@@ -882,6 +981,8 @@ def main():
     test_effects()
     test_clouds()
     test_performance()
+    test_vehicle_materials()
+    test_tree_textures()
     test_dirt_road()
     test_backface_culling()
     test_shader_variants()

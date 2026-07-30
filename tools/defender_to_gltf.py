@@ -67,6 +67,11 @@ TYRE_MIN_EXTENT = 5.5
 # near the hub is much longer than the tyre.
 WHEEL_MAX_EXTENT = 10.0
 
+# Paintwork colour for materials whose name says "paint" or "body" but whose
+# exported diffuse is the usual Max black. A dark olive green is what an
+# "Adventure Ready" Defender is normally finished in.
+BODY_COLOUR = [0.16, 0.22, 0.17, 1.0]
+
 BODY_CELL = 0.028
 WHEEL_CELL = 0.011
 
@@ -95,6 +100,36 @@ def node_matrix(model):
     return [[rot[i][j] * s[j] for j in range(3)] for i in range(3)], list(t)
 
 
+def read_materials(objs):
+    """{id: (name, diffuse rgb, shininess)} for every Material in the file.
+
+    The Defender ships 70 of these and the converter used to throw all of
+    them away, replacing the lot with one flat grey - which is why the truck
+    rendered as a single blue-grey blob. Each of its 570 meshes uses exactly
+    one material (LayerElementMaterial mapping is AllSame), so the mapping
+    back is unambiguous.
+    """
+    out = {}
+    for nm, props, kids in objs[2]:
+        if nm != "Material" or len(props) < 2:
+            continue
+        colour = (0.6, 0.6, 0.6)
+        shininess = 16.0
+        for cn, _cp, ck in kids:
+            if cn != "Properties70":
+                continue
+            for _pn, pp, _pk in ck:
+                if not pp:
+                    continue
+                key = str(pp[0])
+                if key in ("DiffuseColor", "Diffuse"):
+                    colour = tuple(float(x) for x in pp[-3:])
+                elif key in ("Shininess", "ShininessExponent"):
+                    shininess = float(pp[-1])
+        out[props[0]] = (str(props[1]).split("\x00")[0], colour, shininess)
+    return out
+
+
 def read_scene(path):
     nodes = F.parse(path)
     top = {n[0]: n for n in nodes}
@@ -102,7 +137,9 @@ def read_scene(path):
     conns = top["Connections"]
     models = {m[1][0]: m for m in objs[2] if m[0] == "Model"}
     geos = {g[1][0]: g for g in objs[2] if g[0] == "Geometry"}
+    materials = read_materials(objs)
     geo_model = {}
+    model_mat = {}
     parent = {}
     for c in conns[2]:
         if c[1][0] != "OO":
@@ -110,9 +147,11 @@ def read_scene(path):
         src, dst = c[1][1], c[1][2]
         if src in geos and dst in models:
             geo_model[src] = dst
+        elif src in materials and dst in models:
+            model_mat[dst] = src
         elif src in models:
             parent[src] = dst
-    return models, geos, geo_model, parent
+    return models, geos, geo_model, parent, materials, model_mat
 
 
 def world_matrix(mid, models, parent, cache):
@@ -246,6 +285,106 @@ def classify(bbox):
     return "body"
 
 
+# How a material name maps to a believable PBR surface.
+#
+# The FBX diffuse colours are nearly all black (0.0-0.1) because these are
+# 3ds Max scenes where the visible colour came from a shader network that
+# does not survive FBX export. Using them directly gives a black truck.
+# The material NAMES did survive, and they are descriptive, so they are what
+# the classification keys off - falling back to the exported colour only
+# when a name says nothing.
+#
+# token -> (base colour, metallic, roughness)
+SURFACE_BY_NAME = [
+    ("glass",     ([0.14, 0.17, 0.20, 0.45], 0.0, 0.05)),
+    ("vidro",     ([0.14, 0.17, 0.20, 0.45], 0.0, 0.05)),
+    ("chrome",    ([0.86, 0.88, 0.91, 1.0], 1.0, 0.10)),
+    # "silver" on the pickup covers 34,781 triangles spanning the entire
+    # 5.5 m body - that is the panelwork, not trim, and rendering the whole
+    # truck as polished chrome looks wrong. Treated as a light metallic
+    # paint: still clearly metal, but a body finish rather than a mirror.
+    ("silver",    ([0.55, 0.57, 0.60, 1.0], 0.65, 0.38)),
+    ("aro",       ([0.66, 0.68, 0.71, 1.0], 0.95, 0.28)),
+    ("metal",     ([0.42, 0.44, 0.47, 1.0], 0.85, 0.40)),
+    ("mtl",       ([0.42, 0.44, 0.47, 1.0], 0.85, 0.40)),
+    ("steel",     ([0.48, 0.50, 0.53, 1.0], 0.90, 0.35)),
+    ("light",     ([0.90, 0.88, 0.80, 1.0], 0.0, 0.15)),
+    ("lamp",      ([0.90, 0.88, 0.80, 1.0], 0.0, 0.15)),
+    ("faro",      ([0.90, 0.88, 0.80, 1.0], 0.0, 0.15)),
+    ("tyre",      ([0.055, 0.055, 0.060, 1.0], 0.0, 0.95)),
+    ("tire",      ([0.055, 0.055, 0.060, 1.0], 0.0, 0.95)),
+    ("brc",       ([0.055, 0.055, 0.060, 1.0], 0.0, 0.95)),
+    ("rubber",    ([0.06, 0.06, 0.065, 1.0], 0.0, 0.93)),
+    ("spring",    ([0.20, 0.16, 0.14, 1.0], 0.7, 0.60)),
+    ("plastic",   ([0.10, 0.10, 0.11, 1.0], 0.0, 0.65)),
+    ("interior",  ([0.09, 0.09, 0.10, 1.0], 0.0, 0.80)),
+    ("seat",      ([0.13, 0.11, 0.10, 1.0], 0.0, 0.85)),
+    ("paint",     (None, 0.35, 0.32)),
+    ("body",      (None, 0.35, 0.32)),
+    ("base",      (None, 0.30, 0.42)),
+]
+
+
+def surface_by_shape(extent, centre_y, tris, body_extent, rank):
+    """Classify a submesh from its geometry when its name says nothing.
+
+    The Defender's 70 materials are called "Material #1958" and so on - the
+    names carry no meaning, so name matching alone leaves the whole truck a
+    uniform grey. Shape and size do carry meaning. Measured on the actual
+    submeshes:
+
+        29,433 tris  2.04 x 1.26 x 3.93 m   the body shell
+        12,487 tris  1.65 x 1.66 x 4.12 m   arches, sills, underbody
+         8,804 tris  1.51 x 0.46 x 2.56 m   roof rack
+         2,474 tris  1.36 x 1.32 x 0.29 m   a thin upright pane - glazing
+
+    `rank` is the index of this submesh when sorted by triangle count, which
+    is what distinguishes "the shell" from "everything else large".
+    """
+    width, height, length = extent
+    body_w, _body_h, body_l = body_extent
+    spans_body = width > body_w * 0.55 and length > body_l * 0.55
+
+    # A pane: thin in one axis, broad in the others, and sitting high.
+    thin = min(extent) < 0.35
+    if thin and centre_y > 1.0 and tris < 6000 and max(extent) > 0.8:
+        return [0.13, 0.16, 0.19, 0.42], 0.0, 0.05
+
+    # The shell is simply the biggest thing that wraps the vehicle.
+    if rank == 0 or (spans_body and tris > 10000):
+        return None, 0.35, 0.34
+
+    # Painted structure: large, spans the body, sits at body height.
+    if spans_body and centre_y > 0.7:
+        return None, 0.30, 0.45
+
+    # Low-slung parts are chassis, axles and guards.
+    if centre_y < 0.8:
+        return [0.075, 0.075, 0.08, 1.0], 0.55, 0.72
+
+    # Fittings: racks, mirrors, lamp guards, hinges.
+    return [0.13, 0.135, 0.14, 1.0], 0.60, 0.45
+
+
+def surface_for(name, colour, body_colour):
+    """Turn an FBX material into a glTF PBR material."""
+    lowered = name.lower()
+    for token, (base, metallic, rough) in SURFACE_BY_NAME:
+        if token in lowered:
+            if base is None:
+                return list(body_colour), metallic, rough
+            return list(base), metallic, rough
+
+    # No hint in the name: use the exported diffuse, but lift it out of the
+    # near-black range so the part is visible at all. Anything below 0.12 is
+    # treated as "unset" rather than as a deliberate black.
+    level = max(colour)
+    if level < 0.12:
+        grey = 0.16 + level * 2.0
+        return [grey, grey, grey * 1.02, 1.0], 0.25, 0.55
+    return [colour[0], colour[1], colour[2], 1.0], 0.25, 0.50
+
+
 def cluster(tris, cell):
     reps = {}
     for tri in tris:
@@ -314,9 +453,17 @@ def support_cloud(points, ndirs):
     return [list(k) for k in found]
 
 
-def write_gltf(name, pos, nrm, uv, tris, out_dir):
+def write_gltf(name, parts, out_dir, body_colour, body_extent=(2.0, 2.0, 4.5)):
+    """Write one glTF with one primitive per material.
+
+    `parts` is [(material name, diffuse, shininess, pos, nrm, uv, idx), ...].
+    Splitting by material is the whole point: the old version merged every
+    surface into a single primitive with one flat colour, which is why the
+    Defender and the pickup rendered as featureless blue-grey blocks.
+    """
     buf = bytearray()
-    views, accessors = [], []
+    views = []
+    accessors = []
 
     def add(data, target):
         while len(buf) % 4:
@@ -327,58 +474,93 @@ def write_gltf(name, pos, nrm, uv, tris, out_dir):
                       "byteLength": len(data), "target": target})
         return len(views) - 1
 
-    n = len(pos) // 3
-    v = add(struct.pack("<%df" % len(pos), *pos), 34962)
-    accessors.append({"bufferView": v, "componentType": 5126, "count": n,
-                      "type": "VEC3",
-                      "min": [min(pos[i::3]) for i in range(3)],
-                      "max": [max(pos[i::3]) for i in range(3)]})
-    v = add(struct.pack("<%df" % len(nrm), *nrm), 34962)
-    accessors.append({"bufferView": v, "componentType": 5126, "count": n, "type": "VEC3"})
-    v = add(struct.pack("<%df" % len(uv), *uv), 34962)
-    accessors.append({"bufferView": v, "componentType": 5126, "count": n, "type": "VEC2"})
-    if n <= 65535:
-        v = add(struct.pack("<%dH" % len(tris), *tris), 34963)
-        ctype = 5123
-    else:
-        v = add(struct.pack("<%dI" % len(tris), *tris), 34963)
-        ctype = 5125
-    accessors.append({"bufferView": v, "componentType": ctype,
-                      "count": len(tris), "type": "SCALAR"})
+    primitives = []
+    materials = []
+    # parts arrive sorted by triangle count, biggest first.
+    for rank, (mat_name, diffuse, _shine, pos, nrm, uv, idx) in enumerate(parts):
+        if not idx:
+            continue
+        n = len(pos) // 3
+        v = add(struct.pack("<%df" % len(pos), *pos), 34962)
+        a_pos = len(accessors)
+        accessors.append({
+            "bufferView": v, "componentType": 5126, "count": n, "type": "VEC3",
+            "min": [min(pos[i::3]) for i in range(3)],
+            "max": [max(pos[i::3]) for i in range(3)]})
+        v = add(struct.pack("<%df" % len(nrm), *nrm), 34962)
+        a_nrm = len(accessors)
+        accessors.append({"bufferView": v, "componentType": 5126,
+                          "count": n, "type": "VEC3"})
+        v = add(struct.pack("<%df" % len(uv), *uv), 34962)
+        a_uv = len(accessors)
+        accessors.append({"bufferView": v, "componentType": 5126,
+                          "count": n, "type": "VEC2"})
+        if n <= 65535:
+            v = add(struct.pack("<%dH" % len(idx), *idx), 34963)
+            ctype = 5123
+        else:
+            v = add(struct.pack("<%dI" % len(idx), *idx), 34963)
+            ctype = 5125
+        a_idx = len(accessors)
+        accessors.append({"bufferView": v, "componentType": ctype,
+                          "count": len(idx), "type": "SCALAR"})
 
-    is_wheel = name.startswith("wheel_")
-    base = [0.06, 0.06, 0.065, 1.0] if is_wheel else [0.55, 0.58, 0.54, 1.0]
+        # Prefer the name when it means something, fall back to shape.
+        base, metallic, rough = surface_for(mat_name, diffuse, body_colour)
+        if not any(tok in mat_name.lower() for tok, _ in SURFACE_BY_NAME):
+            extent = [max(pos[i::3]) - min(pos[i::3]) for i in range(3)]
+            centre_y = (max(pos[1::3]) + min(pos[1::3])) * 0.5
+            shaped = surface_by_shape(extent, centre_y, len(idx) // 3,
+                                      body_extent, rank)
+            if shaped is not None:
+                base, metallic, rough = shaped
+                if base is None:
+                    base = list(body_colour)
+        primitives.append({
+            "attributes": {"POSITION": a_pos, "NORMAL": a_nrm,
+                           "TEXCOORD_0": a_uv},
+            "indices": a_idx, "material": len(materials)})
+        mat = {
+            "name": mat_name or (name + "_mat"),
+            "pbrMetallicRoughness": {
+                "baseColorFactor": base,
+                "metallicFactor": metallic,
+                "roughnessFactor": rough,
+            },
+            "doubleSided": False,
+        }
+        if base[3] < 0.999:
+            mat["alphaMode"] = "BLEND"
+        materials.append(mat)
+
+    if not primitives:
+        return 0
+
     gltf = {
         "asset": {"version": "2.0", "generator": "cargame defender_to_gltf.py"},
         "scene": 0,
         "scenes": [{"nodes": [0]}],
         "nodes": [{"name": name, "mesh": 0}],
-        "meshes": [{"name": name, "primitives": [{
-            "attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2},
-            "indices": 3, "material": 0}]}],
-        "materials": [{
-            "name": name + "_mat",
-            "pbrMetallicRoughness": {
-                "baseColorFactor": base,
-                "metallicFactor": 0.0 if is_wheel else 0.35,
-                "roughnessFactor": 0.92 if is_wheel else 0.45,
-            },
-            "doubleSided": False,
-        }],
+        "meshes": [{"name": name, "primitives": primitives}],
+        "materials": materials,
         "accessors": accessors,
         "bufferViews": views,
         "buffers": [{"uri": name + ".bin", "byteLength": len(buf)}],
     }
     open(os.path.join(out_dir, name + ".bin"), "wb").write(bytes(buf))
     json.dump(gltf, open(os.path.join(out_dir, name + ".gltf"), "w"), indent=1)
+    return len(primitives)
 
 
 def main():
     src, out_dir = sys.argv[1], sys.argv[2]
     os.makedirs(out_dir, exist_ok=True)
-    models, geos, geo_model, parent = read_scene(src)
+    models, geos, geo_model, parent, materials, model_mat = read_scene(src)
     cache = {}
 
+    # Triangles are now bucketed by (part, material) rather than by part
+    # alone, so each material can become its own primitive with its own
+    # colour further down.
     groups = {}
     lowest = 1e9
     for gid, geo in geos.items():
@@ -390,7 +572,11 @@ def main():
         if not tris:
             continue
         group = classify(bbox)
-        groups.setdefault(group, []).extend(tris)
+        mat_id = model_mat.get(mid)
+        mat_name, diffuse, shine = materials.get(
+            mat_id, ("", (0.6, 0.6, 0.6), 16.0))
+        groups.setdefault(group, {}).setdefault(
+            (mat_name, diffuse, shine), []).extend(tris)
         for tri in tris:
             for p, _n, _t in tri:
                 lowest = min(lowest, p[1])
@@ -399,10 +585,11 @@ def main():
     print("lifting by %.3f m so the tyres sit on y = 0" % lift)
 
     pivots = {}
-    for group, tris in groups.items():
+    for group, buckets in groups.items():
         if group == "body":
             pivots[group] = (0.0, 0.0, 0.0)
             continue
+        tris = [t for bucket in buckets.values() for t in bucket]
         xs = [p[0] for tri in tris for p, _n, _t in tri]
         ys = [p[1] + lift for tri in tris for p, _n, _t in tri]
         zs = [p[2] for tri in tris for p, _n, _t in tri]
@@ -415,21 +602,37 @@ def main():
             pivots[h] = pivots[w]
 
     counts = {}
-    for group, tris in groups.items():
+    for group, buckets in groups.items():
         px, py, pz = pivots[group]
-        moved = [tuple(((p[0] - px, p[1] + lift - py, p[2] - pz), n, t)
-                       for p, n, t in tri) for tri in tris]
         cell = BODY_CELL if group == "body" else WHEEL_CELL
-        pos, nrm, uv, idx = cluster(moved, cell)
-        if not idx:
+        parts = []
+        total_v = total_t = 0
+        for (mat_name, diffuse, shine), tris in sorted(
+                buckets.items(), key=lambda kv: -len(kv[1])):
+            moved = [tuple(((p[0] - px, p[1] + lift - py, p[2] - pz), n, t)
+                           for p, n, t in tri) for tri in tris]
+            pos, nrm, uv, idx = cluster(moved, cell)
+            if not idx:
+                continue
+            parts.append((mat_name, diffuse, shine, pos, nrm, uv, idx))
+            total_v += len(pos) // 3
+            total_t += len(idx) // 3
+        if not parts:
             continue
-        write_gltf(group, pos, nrm, uv, idx, out_dir)
-        counts[group] = {"verts": len(pos) // 3, "tris": len(idx) // 3}
-        print("%-12s %7d verts %7d tris  pivot (%.3f, %.3f, %.3f)"
-              % (group, len(pos) // 3, len(idx) // 3, px, py, pz))
+        all_pos = [v for p in parts for v in p[3]]
+        extent = tuple(max(all_pos[i::3]) - min(all_pos[i::3])
+                       for i in range(3)) if all_pos else (2.0, 2.0, 4.5)
+        n_prims = write_gltf(group, parts, out_dir, BODY_COLOUR, extent)
+        counts[group] = {"verts": total_v, "tris": total_t}
+        print("%-12s %7d verts %7d tris  %2d materials  pivot (%.3f, %.3f, %.3f)"
+              % (group, total_v, total_t, n_prims, px, py, pz))
 
+    # groups["body"] is now {(material, diffuse, shininess): [tri, ...]}, so
+    # the collision hull has to walk the buckets. The hull covers the whole
+    # body regardless of material, exactly as before.
     body_pts = [(p[0], p[1] + lift, p[2])
-                for tri in groups.get("body", []) for p, _n, _t in tri]
+                for bucket in groups.get("body", {}).values()
+                for tri in bucket for p, _n, _t in tri]
     hulls = slab_hulls(body_pts)
     meta = {
         "pivots": {k: list(v) for k, v in pivots.items()},

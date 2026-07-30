@@ -35,16 +35,16 @@
  ],
  "materials": [
   {
-   "name": "wheel_rr_mat",
+   "name": "Material #1983",
    "pbrMetallicRoughness": {
     "baseColorFactor": [
-     0.06,
-     0.06,
-     0.065,
+     0.16,
+     0.22,
+     0.17,
      1.0
     ],
-    "metallicFactor": 0.0,
-    "roughnessFactor": 0.92
+    "metallicFactor": 0.35,
+    "roughnessFactor": 0.34
    },
    "doubleSided": false
   }
