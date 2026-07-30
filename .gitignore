@@ -1,0 +1,19 @@
+# Godot 4+ specific ignores
+.godot/
+import/
+export.cfg
+export_presets.cfg
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+*.tmp
+*.autosave
+
+# Keep textures but ignore import cache
+*.import
+# But keep our .tres materials
+!*.tres.import

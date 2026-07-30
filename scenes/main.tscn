@@ -1,0 +1,98 @@
+[gd_scene load_steps=9 format=3 uid="uid://main_scene"]
+
+[ext_resource type="PackedScene" path="res://scenes/bmw_1m.tscn" id="1_car"]
+[ext_resource type="Material" path="res://materials/ground_material.tres" id="2_mat"]
+[ext_resource type="Script" path="res://scripts/main.gd" id="3_main"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_1"]
+size = Vector3(200, 1, 200)
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_1"]
+size = Vector2(200, 200)
+subdivide_width = 32
+subdivide_depth = 32
+material = ExtResource("2_mat")
+
+[sub_resource type="ProceduralSkyMaterial" id="SkyMat"]
+sky_top_color = Color(0.15, 0.42, 0.88, 1)
+sky_horizon_color = Color(0.55, 0.76, 0.96, 1)
+ground_bottom_color = Color(0.25, 0.38, 0.21, 1)
+ground_horizon_color = Color(0.6, 0.7, 0.55, 1)
+sun_angle_max = 28.0
+
+[sub_resource type="Sky" id="Sky_1"]
+sky_material = SubResource("SkyMat")
+
+[sub_resource type="Environment" id="Env_1"]
+background_mode = 2
+sky = SubResource("Sky_1")
+tonemap_mode = 2
+tonemap_exposure = 1.08
+tonemap_white = 6.5
+glow_enabled = true
+glow_intensity = 0.45
+glow_bloom = 0.1
+fog_enabled = true
+fog_light_color = Color(0.78, 0.88, 1, 1)
+fog_light_energy = 0.5
+fog_sun_amount = 0.45
+ambient_light_source = 3
+ambient_light_color = Color(0.8, 0.86, 1, 1)
+ambient_light_energy = 0.9
+
+[node name="Main" type="Node3D"]
+script = ExtResource("3_main")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Env_1")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.3213938, -0.3830224, 0.8647791, 0, 0.9135455, 0.4067366, -0.9469282, -0.1304237, 0.2937145, 0, 14, 0)
+light_energy = 1.35
+light_color = Color(1, 0.98, 0.88, 1)
+shadow_enabled = true
+directional_shadow_mode = 3
+directional_shadow_split_1 = 0.1
+directional_shadow_split_2 = 0.22
+directional_shadow_split_3 = 0.5
+directional_shadow_max_distance = 160.0
+shadow_bias = 0.02
+
+[node name="Ground" type="StaticBody3D" parent="."]
+
+[node name="Collision" type="CollisionShape3D" parent="Ground"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
+shape = SubResource("BoxShape3D_1")
+
+[node name="Mesh" type="MeshInstance3D" parent="Ground"]
+mesh = SubResource("PlaneMesh_1")
+
+[node name="BMW_1M" parent="." instance=ExtResource("1_car")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.2, 0)
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Panel" type="Panel" parent="UI"]
+offset_left = 14.0
+offset_top = 14.0
+offset_right = 420.0
+offset_bottom = 210.0
+
+[node name="VBox" type="VBoxContainer" parent="UI/Panel"]
+offset_left = 10.0
+offset_top = 10.0
+offset_right = 396.0
+offset_bottom = 186.0
+
+[node name="Title" type="Label" parent="UI/Panel/VBox"]
+text = "BMW 1M - Stage 1: Max Realistic Physics"
+
+[node name="SpeedLabel" type="Label" parent="UI/Panel/VBox"]
+text = "0 km/h"
+
+[node name="Controls" type="Label" parent="UI/Panel/VBox"]
+text = "WASD - Drive | SPACE - Handbrake | R - Reset air drop
+1500kg | Anti-roll | Downforce | 2 wheel animations"
+
+[node name="Info" type="Label" parent="UI/Panel/VBox"]
+text = "Spawn 4.2m high -> suspension bounce test"

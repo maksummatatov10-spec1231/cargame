@@ -1,0 +1,6 @@
+[gd_resource type="StandardMaterial3D" format=3 uid="uid://wheel_mat]
+
+[resource]
+albedo_color=Color(0.06, 0.06, 0.06, 1)
+roughness=0.85
+metallic=0.02

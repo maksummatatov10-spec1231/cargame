@@ -1,0 +1,7 @@
+[gd_resource type="StandardMaterial3D" format=3 uid="uid://ground_mat]
+
+[resource]
+albedo_color=Color(0.38, 0.42, 0.32, 1)
+roughness=0.92
+metallic=0.0
+uv1_scale=Vector3(12, 12, 1)

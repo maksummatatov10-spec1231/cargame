@@ -1,0 +1,8 @@
+[gd_resource type="StandardMaterial3D" format=3 uid="uid://car_body_mat]
+
+[resource]
+albedo_color=Color(0.025, 0.09, 0.68, 1)
+metallic=0.35
+roughness=0.28
+clearcoat=1.0
+clearcoat_roughness=0.18
