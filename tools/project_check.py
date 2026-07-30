@@ -192,12 +192,48 @@ def check_scripts():
         check("car spawns in the air", height > 0.5, "%.2f m" % height)
 
 
+def check_common_mistakes():
+    """Guards against the classes of bug that actually broke this project."""
+    print("\n== regression guards ==")
+    src = {}
+    for name in os.listdir(os.path.join(ROOT, "scripts")):
+        if name.endswith(".gd"):
+            raw = open(os.path.join(ROOT, "scripts", name)).read()
+            # strip comments so documentation cannot trip the checks
+            src[name] = "\n".join(line.split("#")[0] for line in raw.splitlines())
+
+    # A RigidBody3D's transform is owned by the physics server; assigning it
+    # directly is silently reverted on the next tick.
+    veh = src.get("vehicle.gd", "")
+    bad = re.search(r"^\s*global_transform\s*=", veh, re.M)
+    check("vehicle does not assign global_transform directly",
+          bad is None, "use PhysicsServer3D.body_set_state")
+
+    # @tool scripts run in the editor and can silently rewrite scene data.
+    tools = [n for n, t in src.items() if t.lstrip().startswith("@tool")]
+    check("no gameplay script is marked @tool", not tools, ", ".join(tools))
+
+    # Writing to a SpringArm3D child's transform fights the arm.
+    cam = src.get("chase_camera.gd", "")
+    check("camera transform is left to the spring arm",
+          not re.search(r"camera\.(position|rotation)\s*=", cam))
+
+    # Every wheel visual must be optional, the model is wired up deferred.
+    wheel = src.get("wheel.gd", "")
+    check("wheel visuals are null-guarded for the first frame",
+          "wheel_visual == null" in wheel)
+
+    # Scripts must not assume the model exists before it is instanced.
+    check("vehicle null-checks the model before driving it", "if _model:" in veh)
+
+
 def main():
     print("Godot project validation")
     check_scenes()
     check_gltf()
     check_project()
     check_scripts()
+    check_common_mistakes()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES else "FAILURES: " + ", ".join(FAILURES)))
     return 1 if FAILURES else 0
 

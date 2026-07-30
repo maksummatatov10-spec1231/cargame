@@ -1,4 +1,3 @@
-@tool
 class_name RayWheel
 extends RayCast3D
 
@@ -128,8 +127,6 @@ func _ready() -> void:
 	hit_from_inside = false
 	collide_with_areas = false
 	target_position = Vector3.DOWN * (spring_length + tyre_radius)
-	if Engine.is_editor_hint():
-		return
 	steer_angle = deg_to_rad(toe_deg)
 	rotation.y = steer_angle
 
