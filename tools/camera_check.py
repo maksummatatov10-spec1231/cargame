@@ -289,6 +289,67 @@ def test_frame_rate_independent_smoothing():
           "a linear weight is still there")
 
 
+def test_spring_arm_owns_the_camera():
+    """The script must never assign the camera's transform.
+
+    This is the bug that collapsed the chase view onto the car's roof.
+
+        camera.transform = Transform3D.IDENTITY
+
+    SpringArm3D::process_spring() positions its child with
+    set_global_transform(), and _notification() only ever calls it from
+    NOTIFICATION_INTERNAL_PHYSICS_PROCESS - i.e. on the physics tick
+    (scene/3d/physics/spring_arm_3d.cpp). Setting the camera's *local*
+    transform to identity parks it exactly on the arm's origin, which is the
+    pivot: `arm.position = Vector3(0, height, 0)`, 1.55 m above the car's
+    origin.
+
+    In v2.6 that assignment ran in _physics_process, in the same pass as the
+    spring. In v2.7 the rig moved to _process and the assignment became the
+    last write before every rendered frame, so it beat the spring's placement
+    every time. The result is a camera sitting on the pivot looking down at
+    the bodywork - which is exactly what the screenshot showed.
+    """
+    print("\n== the spring arm must own the camera transform ==")
+    raw = open(os.path.join(ROOT, "scripts", "chase_camera.gd")).read()
+    src = "\n".join(l.split("#")[0] for l in raw.splitlines())
+
+    banned = re.findall(
+        r"camera\.(transform|global_transform|position|global_position|"
+        r"rotation|global_rotation|basis)\s*=", src)
+    check("nothing assigns the camera's transform", not banned,
+          "assigns camera.%s" % ", camera.".join(sorted(set(banned))))
+
+    # The distance the arm is asked for, and where identity would put you.
+    print("  arm pivot sits %.2f m above the car origin" % HEIGHT)
+    print("  arm length at rest %.2f m, at speed %.2f m"
+          % (BASE_DISTANCE, BASE_DISTANCE + SPEED_DISTANCE))
+    print("  camera.transform = IDENTITY would place the camera %.2f m from"
+          % 0.0)
+    print("  the pivot, i.e. %.2f m above the roof - the reported symptom"
+          % HEIGHT)
+
+    # The script is still allowed - and required - to drive these.
+    check("the script still sets the arm length", "arm.spring_length" in src)
+    check("the script still sets the field of view", "camera.fov" in src)
+
+
+def test_mouse_is_hidden_while_driving():
+    """The cursor must not sit in the middle of the screen while driving."""
+    print("\n== mouse cursor ==")
+    game = open(os.path.join(ROOT, "scripts", "game.gd")).read()
+    pause = open(os.path.join(ROOT, "scripts", "pause_menu.gd")).read()
+    menu = open(os.path.join(ROOT, "scripts", "main_menu.gd")).read()
+
+    check("the cursor is hidden when the drive starts",
+          "MOUSE_MODE_HIDDEN" in game)
+    check("the pause menu shows it again",
+          "MOUSE_MODE_VISIBLE" in pause)
+    check("closing the pause menu hides it again",
+          "MOUSE_MODE_HIDDEN" in pause)
+    check("the main menu shows it", "MOUSE_MODE_VISIBLE" in menu)
+
+
 def main():
     print("Chase camera verification")
     test_rig()
@@ -296,6 +357,8 @@ def main():
     test_wheel_pivots_still_valid()
     test_heading_not_euler()
     test_frame_rate_independent_smoothing()
+    test_spring_arm_owns_the_camera()
+    test_mouse_is_hidden_while_driving()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES else "FAILURES: " + ", ".join(FAILURES)))
     return 1 if FAILURES else 0
 

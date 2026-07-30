@@ -88,7 +88,6 @@ func _ready() -> void:
 	if _target == null:
 		arm.collision_mask = 1
 		arm.margin = 0.35
-		camera.transform = Transform3D.IDENTITY
 		return
 
 	_vehicle = _target as Vehicle
@@ -97,8 +96,8 @@ func _ready() -> void:
 
 	arm.collision_mask = 1
 	arm.margin = 0.35
-	# The camera is positioned exclusively by the spring arm.
-	camera.transform = Transform3D.IDENTITY
+	# The camera is positioned exclusively by the spring arm; the script must
+	# never assign camera.transform. See the note in _process().
 
 	# The arm starts inside the car and sweeps backwards, so without this it
 	# immediately hits the car's own collision hulls, collapses to zero length
@@ -207,8 +206,10 @@ func _physics_process(_delta: float) -> void:
 		_yaw = _heading_of(_curr_target)
 
 
-## The camera runs at the display rate against an interpolated target, so it
-## is on the same clock as the car's visual model.
+## The rig is driven here, at the display rate, against an interpolated
+## target so it shares a clock with the car's visual model. The spring arm
+## still places the camera itself on the physics tick, which is fine as long
+## as nothing overwrites that placement - see the note at the end.
 func _process(delta: float) -> void:
 	if _target == null or not is_instance_valid(_target) or not _has_sample:
 		return
@@ -253,7 +254,22 @@ func _process(delta: float) -> void:
 	arm.rotation = Vector3(deg_to_rad(lerpf(base_pitch, speed_pitch, t)), 0.0, 0.0)
 	arm.spring_length = base_distance + speed_distance * t
 	camera.fov = lerpf(base_fov, speed_fov, t * t)
-	camera.transform = Transform3D.IDENTITY
+	# NOTHING may write camera.transform here.
+	#
+	# This line used to read `camera.transform = Transform3D.IDENTITY`, and
+	# that is what collapsed the chase view onto the car's roof.
+	#
+	# SpringArm3D positions its child with set_global_transform() from
+	# NOTIFICATION_INTERNAL_PHYSICS_PROCESS (scene/3d/physics/spring_arm_3d.cpp)
+	# - so on the physics tick. Setting the camera's *local* transform to
+	# identity parks it exactly on the arm's origin, which is the pivot,
+	# 1.55 m above the car.
+	#
+	# In v2.6 the reset ran in _physics_process alongside the spring. In v2.7
+	# the rig moved to _process, which made the reset the last write before
+	# every rendered frame - so it beat the spring every single frame and the
+	# camera rendered from the pivot, looking straight down at the bodywork.
+	# The arm owns this transform; the script only sets the fov.
 
 
 ## Bumper/hood view: the rig is locked to the car and the arm is collapsed, so
@@ -265,9 +281,10 @@ func _update_hood(target_pos: Vector3, target_yaw: float, f: float) -> void:
 	_yaw = target_yaw
 	arm.position = hood_offset
 	arm.rotation = Vector3.ZERO
+	# Zero length, so the arm itself puts the camera on the pivot - which for
+	# this view is the intended position. Still not written by hand.
 	arm.spring_length = 0.0
 	camera.fov = 75.0
-	camera.transform = Transform3D.IDENTITY
 
 
 func _lerp_angle(from: float, to: float, weight: float) -> float:

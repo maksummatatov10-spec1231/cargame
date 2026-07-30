@@ -328,9 +328,21 @@ def check_common_mistakes():
                   and src[name].count("@export") >= 5)
 
     # Writing to a SpringArm3D child's transform fights the arm.
-    cam = src.get("chase_camera.gd", "")
-    check("camera transform is left to the spring arm",
-          not re.search(r"camera\.(position|rotation)\s*=", cam))
+    #
+    # This used to test only .position and .rotation, and missed
+    # `camera.transform = Transform3D.IDENTITY` - which is precisely what
+    # collapsed the chase camera onto the car's roof. SpringArm3D places its
+    # child with set_global_transform() from the physics tick
+    # (scene/3d/physics/spring_arm_3d.cpp); assigning the child's local
+    # transform parks it on the pivot instead. `transform` is the one that
+    # actually shipped broken, so it is now the one that is checked.
+    cam_raw = src.get("chase_camera.gd", "")
+    cam = "\n".join(l.split("#")[0] for l in cam_raw.splitlines())
+    bad = re.findall(
+        r"camera\.(position|rotation|transform|global_position|"
+        r"global_transform|basis)\s*=", cam)
+    check("camera transform is left to the spring arm", not bad,
+          "script assigns camera.%s" % ", camera.".join(sorted(set(bad))))
 
     # Every wheel visual must be optional, the model is wired up deferred.
     wheel = src.get("wheel.gd", "")

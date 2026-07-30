@@ -81,6 +81,8 @@ func close() -> void:
 	_buttons.visible = true
 	_root.visible = false
 	get_tree().paused = false
+	# Back to driving, so the cursor goes away again.
+	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
 
 
 func toggle() -> void:

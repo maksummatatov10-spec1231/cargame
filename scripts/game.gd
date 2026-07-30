@@ -35,6 +35,11 @@ func _ready() -> void:
 	_pause.name = "PauseMenu"
 	add_child(_pause)
 
+	# The menus turn the cursor on and nothing ever turned it back off, so it
+	# sat in the middle of the screen for the whole drive. Hidden while
+	# driving, restored by the pause menu.
+	Input.set_mouse_mode(Input.MOUSE_MODE_HIDDEN)
+
 	var found := get_tree().get_nodes_in_group("terrain")
 	if not found.is_empty():
 		_terrain = found[0] as Terrain
