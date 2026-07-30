@@ -96,6 +96,32 @@ extends RayCast3D
 ## series with the coil-over and absorbs a large part of any sharp impact; a
 ## 245/35 R19 sits around 260 kN/m.
 @export var tyre_rate := 260000.0
+## Smoothing applied to the contact normal, 0 = raw, 1 = fully smoothed.
+##
+## HeightMapShape3D is a triangulated grid and a raycast reports the normal of
+## the one triangle it hit, which is constant across the triangle and then
+## changes instantly at the edge. Over a 1.5625 m cell at 25 m/s that is a step
+## every ~7 physics ticks, and the measured worst step is 31.8 degrees. The
+## suspension force is applied along that normal, so a 31.8 degree step under
+## 14.7 kN of load throws 7.7 kN sideways in a single tick - 5.2 m/s^2 on the
+## whole car, out of nowhere, on flat-looking ground. That is the shake.
+##
+## The terrain can evaluate a proper interpolated normal (worst step 3.1
+## degrees, 10x smaller), so the vehicle feeds that in and the wheel blends
+## towards it. The collision shape is untouched; only the direction the force
+## is applied along is filtered.
+@export_range(0.0, 1.0) var normal_smoothing := 1.0
+## Low-pass on the contact normal, in Hz. Even the interpolated normal steps a
+## little at cell boundaries; this rounds off what is left.
+##
+## The value matters more than it looks. The one-pole blend factor is
+## TAU * hz * dt, and at 120 Hz anything above 19 Hz gives a factor over 1.0,
+## which clamps and means no filtering at all - the first attempt used 30 Hz
+## and did precisely nothing. 8 Hz gives a blend of 0.419, which is well
+## inside range and still far above the 1-2 Hz of real suspension movement, so
+## it removes the sampling artefacts without softening anything the driver
+## should feel.
+@export var normal_filter_hz := 8.0
 ## Damping of the tyre carcass in Ns/m. Rubber has strong hysteresis, so a
 ## squashed tyre gives back noticeably less than it absorbed; without this the
 ## car would bounce off the ground like a ball.
@@ -116,6 +142,10 @@ var slip_angle := 0.0
 var grounded := false
 var surface_normal := Vector3.UP
 var contact_point := Vector3.ZERO
+## Interpolated ground normal supplied by the vehicle from the terrain, used
+## in place of the raw per-triangle normal. Zero means "none available", in
+## which case the raycast normal is used unchanged.
+var terrain_normal := Vector3.ZERO
 var tyre_force := Vector2.ZERO      ## x = longitudinal, y = lateral (N)
 var drive_torque := 0.0
 var brake_torque := 0.0
@@ -145,6 +175,7 @@ var _prev_tyre_deflection := 0.0
 var _lag_ratio := 0.0               ## relaxation-filtered slip ratio
 var _lag_tan_alpha := 0.0           ## relaxation-filtered tan(slip angle)
 var _mf_stiffness := 1.685211       ## B, solved so the peak lands exactly at s = 1
+var _filtered_normal := Vector3.UP
 
 func _ready() -> void:
 	_inertia = 0.5 * wheel_mass * tyre_radius * tyre_radius
@@ -169,6 +200,7 @@ func reset_state() -> void:
 	slip_ratio = 0.0
 	slip_angle = 0.0
 	spring_force = 0.0
+	_filtered_normal = Vector3.UP
 	tyre_force = Vector2.ZERO
 	drive_torque = 0.0
 	brake_torque = 0.0
@@ -213,7 +245,7 @@ func update_suspension(delta: float, opposite_travel: float) -> float:
 	var overlap := 0.0
 	if grounded:
 		contact_point = get_collision_point()
-		surface_normal = get_collision_normal()
+		surface_normal = _resolve_normal(get_collision_normal(), delta)
 		# The ray origin is the top of the damper, so the length of the spring is
 		# the distance to the contact minus the radius of the tyre.
 		var length := global_position.distance_to(contact_point) - tyre_radius
@@ -225,6 +257,7 @@ func update_suspension(delta: float, opposite_travel: float) -> float:
 	else:
 		contact_point = to_global(target_position)
 		surface_normal = global_basis.y
+		_filtered_normal = surface_normal
 
 	_prev_tyre_deflection = _tyre_deflection
 	_tyre_deflection = overlap
@@ -273,6 +306,22 @@ func update_suspension(delta: float, opposite_travel: float) -> float:
 
 	spring_force = maxf(force, 0.0)
 	return travel
+
+
+## Turns the raw per-triangle raycast normal into the one the forces actually
+## use: blended towards the terrain's interpolated normal, then low-passed.
+func _resolve_normal(raw: Vector3, delta: float) -> Vector3:
+	var target := raw
+	if terrain_normal.length_squared() > 0.5:
+		target = raw.slerp(terrain_normal, normal_smoothing).normalized()
+	# One-pole filter. The blend factor is derived from the cutoff frequency so
+	# the behaviour does not change with the physics rate.
+	var blend := clampf(TAU * normal_filter_hz * delta, 0.0, 1.0)
+	if _filtered_normal.length_squared() < 0.5:
+		_filtered_normal = target
+	else:
+		_filtered_normal = _filtered_normal.slerp(target, blend).normalized()
+	return _filtered_normal
 
 
 # --------------------------------------------------------------------------- #

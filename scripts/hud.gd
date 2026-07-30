@@ -3,16 +3,27 @@ extends Control
 ## Speed / rpm / gear readout plus an optional physics telemetry panel
 ## (toggled with the tilde key) that shows what every corner is doing.
 
+# Frame rate is averaged over a short window. The instantaneous value jumps
+# around by tens of frames from one frame to the next, which makes it useless
+# for judging whether a change actually helped.
+const FPS_WINDOW := 0.5
+
 @export var vehicle_path : NodePath
 
 var _vehicle : Vehicle
 var _show_debug := false
+var _frames := 0
+var _elapsed := 0.0
+var _worst_frame := 0.0
+var _fps_value := 0.0
+var _one_percent_low := 0.0
 
 @onready var _speed : Label = $Panel/Speed
 @onready var _gear : Label = $Panel/Gear
 @onready var _rpm : ProgressBar = $Panel/Rpm
 @onready var _hint : Label = $Hint
 @onready var _debug : Label = $Debug
+@onready var _fps : Label = $Fps
 
 
 ## Points the readout at a different vehicle, used when they are swapped.
@@ -29,7 +40,8 @@ func _ready() -> void:
 		+ "\nV  swap vehicle      C  camera      R  respawn      ~  telemetry"
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_update_fps(delta)
 	if Input.is_action_just_pressed("toggle_debug"):
 		_show_debug = not _show_debug
 		_debug.visible = _show_debug
@@ -51,8 +63,52 @@ func _process(_delta: float) -> void:
 		_debug.text = _build_telemetry()
 
 
+## Averaged frame rate plus the worst frame in the window.
+##
+## The worst frame is the number that matters on a weak machine: an average of
+## 60 with a 90 ms spike every second feels far worse than a steady 40, and
+## only the spike tells you something is hitching rather than simply being
+## heavy.
+func _update_fps(delta: float) -> void:
+	_frames += 1
+	_elapsed += delta
+	_worst_frame = maxf(_worst_frame, delta)
+	if _elapsed < FPS_WINDOW:
+		return
+	_fps_value = _frames / _elapsed
+	_one_percent_low = 1.0 / maxf(_worst_frame, 0.0001)
+	_frames = 0
+	_elapsed = 0.0
+	_worst_frame = 0.0
+
+	_fps.text = "%d fps\n%.1f ms   low %d" % [
+		roundi(_fps_value), 1000.0 / maxf(_fps_value, 0.001),
+		roundi(_one_percent_low)]
+	# Green above 50, amber down to 30, red below - so you can tell at a glance
+	# without reading the number.
+	if _fps_value >= 50.0:
+		_fps.modulate = Color(0.55, 1.0, 0.55)
+	elif _fps_value >= 30.0:
+		_fps.modulate = Color(1.0, 0.85, 0.4)
+	else:
+		_fps.modulate = Color(1.0, 0.45, 0.4)
+
+
 func _build_telemetry() -> String:
 	var lines := PackedStringArray()
+	# Where the time is actually going. On a slow machine the split between
+	# these three tells you whether to cut draw calls, triangles or physics.
+	lines.append("fps %.1f   frame %.2f ms   worst %.1f ms" % [
+		_fps_value, 1000.0 / maxf(_fps_value, 0.001),
+		1000.0 / maxf(_one_percent_low, 0.001)])
+	lines.append("draw calls %d   tris %d   video mem %.0f MB" % [
+		Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
+		Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
+		Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0])
+	lines.append("process %.2f ms   physics %.2f ms" % [
+		Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+		Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0])
+	lines.append("")
 	lines.append("boost %.2f" % _vehicle.boost)
 	lines.append("rpm %5.0f   gear %s   clutch %.2f" % [
 		_vehicle.engine_rpm,

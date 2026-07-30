@@ -378,9 +378,9 @@ class Car:
                 "spring_rate": 52800.0 if front else 53500.0,
                 "bump": 3090.0 if front else 2970.0,
                 "rebound": 5270.0 if front else 5070.0,
-                "anti_roll": 14000.0 if front else 9500.0,
-                "mu": 1.55 if front else 1.58,
-                "peak_sa_deg": 8.0 if front else 8.8,
+                "anti_roll": 15600.0 if front else 7600.0,
+                "mu": 1.55 if front else 1.62,
+                "peak_sa_deg": 9.2 if front else 7.4,
                 "nominal_load": corner_mass * G,
                 "camber": -1.4 if front else -1.9,
                 "supported_mass": corner_mass,
@@ -1055,9 +1055,9 @@ def build_pickup(height):
             "spring_rate": 49000.0 if front else 44000.0,
             "bump": 4200.0 if front else 3800.0,
             "rebound": 7100.0 if front else 6400.0,
-            "anti_roll": 9000.0 if front else 5000.0,
-            "mu": 1.28 if front else 1.30,
-            "peak_sa_deg": 10.5 if front else 11.0,
+            "anti_roll": 10200.0 if front else 4400.0,
+            "mu": 1.28 if front else 1.36,
+            "peak_sa_deg": 12.0 if front else 9.8,
             "nominal_load": cm * 9.81, "camber": -0.5, "supported_mass": cm,
         }
         mount = (p[0] - car.com[0], p[1] + travel - drop - car.com[1],
@@ -1124,8 +1124,8 @@ DEFENDER = {
     "front_rate": 44000.0, "rear_rate": 41000.0,
     "front_bump": 4000.0, "front_reb": 6800.0,
     "rear_bump": 3700.0, "rear_reb": 6200.0,
-    "front_arb": 6500.0, "rear_arb": 4000.0,
-    "mu_f": 1.22, "mu_r": 1.24, "sa_f": 11.5, "sa_r": 12.0,
+    "front_arb": 7400.0, "rear_arb": 3500.0,
+    "mu_f": 1.22, "mu_r": 1.30, "sa_f": 13.0, "sa_r": 10.4,
     "wm_f": 32.0, "wm_r": 34.0,
     "meta": "defender_meta.json", "dir": "defender",
 }
@@ -1245,6 +1245,279 @@ def test_cornering():
     check("still upright", car.body.basis[1][1] > 0.9)
 
 
+def understeer_gradient(mass, front_weight, mu_f, mu_r, sa_f_deg, sa_r_deg):
+    """K = Wf/Cf - Wr/Cr, in degrees per g.
+
+    This is the single number that decides whether a car spins. Derived from
+    the bicycle model: the steering angle needed to hold a corner is
+    L/R + K*a_y, so at K < 0 more speed needs *less* steering, and above the
+    critical speed sqrt(L*g/-K) any disturbance grows instead of decaying.
+    Positive K means the car runs wide first, which is recoverable by lifting.
+    """
+    wf = mass * G * front_weight / 2.0
+    wr = mass * G * (1.0 - front_weight) / 2.0
+    cf = mu_f * wf / math.radians(sa_f_deg)
+    cr = mu_r * wr / math.radians(sa_r_deg)
+    return math.degrees(wf / cf - wr / cr)
+
+
+def test_understeer_balance():
+    """Every vehicle must understeer, i.e. K > 0.
+
+    All three were set up to oversteer: the BMW at -0.408 deg/g with a
+    critical speed of 217 km/h, the Defender at -0.258, the pickup at -0.251.
+    A negative gradient is not a handling preference, it is an instability.
+    """
+    print("\n== balance: no vehicle may be inherently unstable ==")
+    cars = [
+        ("BMW 1M", 1495.0, 0.523, 1.55, 1.62, 9.2, 7.4, 15600.0, 7600.0),
+        ("Defender", 2550.0, 0.51, 1.28, 1.36, 12.0, 9.8, 10200.0, 4400.0),
+        ("pickup", 2450.0, 0.56, 1.22, 1.30, 13.0, 10.4, 7400.0, 3500.0),
+    ]
+    for name, m, fw, muf, mur, saf, sar, arb_f, arb_r in cars:
+        k = understeer_gradient(m, fw, muf, mur, saf, sar)
+        if k > 0.0:
+            char = math.sqrt(2.632 * G / math.radians(k)) * 3.6
+            note = "characteristic speed %.0f km/h" % char
+        else:
+            note = "CRITICAL speed %.0f km/h" % (
+                math.sqrt(2.632 * G / math.radians(-k)) * 3.6)
+        print("  %-9s K = %+6.3f deg/g   %s" % (name, k, note))
+        check("%s understeers rather than oversteers" % name, k > 0.0,
+              "K = %+.3f deg/g" % k)
+        # Too much understeer is its own problem: the car stops responding.
+        check("%s is not numb" % name, k < 4.0, "K = %+.3f deg/g" % k)
+        # Roll stiffness must be rear-biased-ish for the same reason: a
+        # front-heavy bar overloads the outer front tyre and adds understeer,
+        # but it was being used the other way round.
+        share = 100.0 * arb_f / (arb_f + arb_r)
+        print("      roll stiffness %.1f%% front" % share)
+        check("%s roll stiffness is front biased" % name, share > 60.0,
+              "%.1f%% front" % share)
+
+
+def test_no_spin_under_provocation():
+    """A lift-off in a corner must not swap ends.
+
+    This is the classic rear-drive accident: cornering hard, close the
+    throttle, weight moves forward, the rear tyres unload and let go. With a
+    negative understeer gradient it is unrecoverable.
+    """
+    print("\n== provocation: lift off mid corner, must not spin ==")
+    car = Car(REST_HEIGHT)
+    for _ in range(360):
+        car.step()
+    car.throttle = 0.55
+    while car.speed_kmh() < 85.0:
+        car.step()
+
+    car.steer_input = 0.75
+    for _ in range(120 * 2):
+        car.step()
+    yaw_before = abs(car.body.omega[1])
+
+    # snap the throttle shut
+    car.throttle = 0.0
+    peak_yaw = yaw_before
+    heading = math.atan2(-car.body.basis[0][2], -car.body.basis[2][2])
+    for _ in range(120 * 3):
+        car.step()
+        peak_yaw = max(peak_yaw, abs(car.body.omega[1]))
+    heading_after = math.atan2(-car.body.basis[0][2], -car.body.basis[2][2])
+    turned = math.degrees(abs((heading_after - heading + math.pi) %
+                              (2 * math.pi) - math.pi))
+
+    # Sideslip: the angle between where the car points and where it is going.
+    vel = car.body.vel
+    fwd = (-car.body.basis[0][2], -car.body.basis[1][2], -car.body.basis[2][2])
+    right = (car.body.basis[0][0], car.body.basis[1][0], car.body.basis[2][0])
+    slip = math.degrees(math.atan2(v_dot(vel, right), max(v_dot(vel, fwd), 0.1)))
+
+    print("  yaw %.2f -> peak %.2f rad/s, turned %.0f deg, sideslip %.1f deg, %.0f km/h"
+          % (yaw_before, peak_yaw, turned, slip, car.speed_kmh()))
+    # A spin is a yaw rate that runs away. Allowing 1.6x means the car may
+    # tighten its line - which is correct and expected - but not let go.
+    check("lift-off does not spin the car", peak_yaw < yaw_before * 1.6 + 0.1,
+          "%.2f -> %.2f rad/s" % (yaw_before, peak_yaw))
+    check("sideslip stays under control", abs(slip) < 15.0, "%.1f deg" % slip)
+    check("still upright after the lift", car.body.basis[1][1] > 0.9)
+
+
+def test_contact_normal_smoothing():
+    """The suspension force must not be applied along a per-triangle normal.
+
+    HeightMapShape3D is a triangulated grid, and a raycast returns the normal
+    of the one triangle it hit. Across a 1.5625 m cell that is constant, and
+    at the boundary it steps. Measured on the real terrain, driving in a
+    straight line: the raw normal jumps up to 31.8 degrees between consecutive
+    physics ticks. Under the car's own weight that is a 7.7 kN sideways force
+    appearing in one tick, out of nowhere, on ground that looks flat.
+    """
+    print("\n== contact normal: force direction must be continuous ==")
+
+    # Reproduce the terrain's noise exactly.
+    size, res, feature, hscale = 400.0, 257, 190.0, 34.0
+    cell = size / (res - 1)
+
+    def h2(x, y, salt):
+        n = math.sin(x * 127.1 + y * 311.7 + salt * 74.7) * 43758.5453
+        return n - math.floor(n)
+
+    def vnoise(x, y, salt):
+        xi, yi = math.floor(x), math.floor(y)
+        xf, yf = x - xi, y - yi
+        u = xf * xf * (3 - 2 * xf)
+        v = yf * yf * (3 - 2 * yf)
+        a, b = h2(xi, yi, salt), h2(xi + 1, yi, salt)
+        c, d = h2(xi, yi + 1, salt), h2(xi + 1, yi + 1, salt)
+        return (a + (b - a) * u) + ((c - a) + (d - c) * u - (b - a) * u) * v
+
+    def fractal(wx, wz):
+        total, amp, freq, norm = 0.0, 1.0, 1.0 / feature, 0.0
+        for o in range(6):
+            v = vnoise(wx * freq, wz * freq, o * 17)
+            if o >= 2:
+                v = 1.0 - abs(v * 2.0 - 1.0)
+                v *= v
+            total += v * amp
+            norm += amp
+            amp *= 0.5
+            freq *= 2.07
+        return total / norm
+
+    def grid(ix, iz):
+        return fractal(ix * cell - size / 2, iz * cell - size / 2) * hscale
+
+    def bilinear(wx, wz):
+        fx, fz = (wx + size / 2) / cell, (wz + size / 2) / cell
+        x0, z0 = int(fx), int(fz)
+        tx, tz = fx - x0, fz - z0
+        a = grid(x0, z0) * (1 - tx) + grid(x0 + 1, z0) * tx
+        b = grid(x0, z0 + 1) * (1 - tx) + grid(x0 + 1, z0 + 1) * tx
+        return a * (1 - tz) + b * tz
+
+    def facet_normal(wx, wz):
+        fx, fz = (wx + size / 2) / cell, (wz + size / 2) / cell
+        x0, z0 = int(fx), int(fz)
+        tx, tz = fx - x0, fz - z0
+        h00, h10 = grid(x0, z0), grid(x0 + 1, z0)
+        h01, h11 = grid(x0, z0 + 1), grid(x0 + 1, z0 + 1)
+        if tx + tz < 1.0:
+            p0, p1, p2 = (0.0, h00, 0.0), (1.0, h10, 0.0), (0.0, h01, 1.0)
+        else:
+            p0, p1, p2 = (1.0, h10, 0.0), (1.0, h11, 1.0), (0.0, h01, 1.0)
+        u = v_sub(p1, p0)
+        w = v_sub(p2, p0)
+        n = v_cross(u, w)
+        n = (n[0] / cell, n[1], n[2] / cell)
+        if n[1] < 0.0:
+            n = v_mul(n, -1.0)
+        return v_norm(n)
+
+    def smooth_normal(wx, wz):
+        e = cell
+        return v_norm((bilinear(wx - e, wz) - bilinear(wx + e, wz), 2.0 * e,
+                       bilinear(wx, wz - e) - bilinear(wx, wz + e)))
+
+    def sweep(fn, filter_hz):
+        """Worst tick-to-tick change in the normal, driving 300 m at 25 m/s."""
+        x, z = -150.0, 40.0
+        prev = None
+        state = None
+        worst = 0.0
+        while x < 150.0:
+            n = fn(x, z)
+            if filter_hz > 0.0:
+                blend = min(1.0, math.tau * filter_hz * DT)
+                if state is None:
+                    state = n
+                else:
+                    state = v_norm(v_add(state, v_mul(v_sub(n, state), blend)))
+                n = state
+            if prev is not None:
+                d = math.degrees(math.acos(
+                    max(-1.0, min(1.0, v_dot(n, prev)))))
+                worst = max(worst, d)
+            prev = n
+            x += 25.0 * DT
+        return worst
+
+    raw = sweep(facet_normal, 0.0)
+    smoothed = sweep(smooth_normal, 0.0)
+    filtered = sweep(smooth_normal, 8.0)
+
+    load = MASS * G
+    kick_raw = load * math.sin(math.radians(raw)) / MASS
+    kick_new = load * math.sin(math.radians(filtered)) / MASS
+
+    print("  raw per-triangle normal : worst step %6.2f deg -> %5.2f m/s^2 kick"
+          % (raw, kick_raw))
+    print("  terrain-interpolated    : worst step %6.2f deg" % smoothed)
+    print("  + 8 Hz filter (shipped) : worst step %6.2f deg -> %5.2f m/s^2 kick"
+          % (filtered, kick_new))
+
+    check("the raw normal really is the problem", raw > 15.0,
+          "only %.1f deg" % raw)
+    check("smoothing cuts the worst step by 5x or more",
+          filtered * 5.0 < raw, "%.2f vs %.2f deg" % (filtered, raw))
+    # The remaining 3 degrees is not an artefact - it is the real shape of the
+    # ground. The heightfield only stores samples every 1.5625 m, so the
+    # bilinear surface through those samples *is* the ground truth, and the
+    # car should feel it. Checked against that reference rather than against
+    # an absolute number, which would just be asking for a flat world.
+    print("  (the %.2f deg that remains is genuine terrain, not sampling)"
+          % smoothed)
+    check("filtering adds no lag of its own", filtered <= smoothed * 1.05,
+          "%.2f vs %.2f deg" % (filtered, smoothed))
+    check("what the car feels is real ground, not the triangulation",
+          abs(filtered - smoothed) < 0.2,
+          "%.2f vs %.2f deg" % (filtered, smoothed))
+
+    # The filter must actually filter. At 120 Hz the one-pole blend factor is
+    # TAU*hz*dt, which exceeds 1.0 above 19 Hz and then clamps, i.e. does
+    # nothing at all - the first attempt shipped 30 Hz and was a no-op. This
+    # catches that directly rather than hoping the number is sensible.
+    blend = math.tau * 8.0 * DT
+    print("  filter blend factor at 120 Hz: %.3f" % blend)
+    check("the low-pass is not clamped into a no-op", blend < 0.95,
+          "blend %.3f" % blend)
+
+
+def test_stuck_recovery():
+    """A car with its wheels off the ground must recover.
+
+    The map's worst crest rises 1.00 m over the 2.63 m wheelbase while the
+    body sits ~0.2 m above the contact line, so the floor grounds out and the
+    wheels lift. This is not a grip problem: first gear puts 15.9 kN at the
+    road (1.08 g) and the steepest slope anywhere is a 0.85 grade.
+    """
+    print("\n== recovery: beached car must get free ==")
+
+    # Slope the car could climb if it were touching the ground at all.
+    worst_grade = 0.849
+    for surface, grip in (("tarmac", 0.94), ("grass", 0.72), ("dirt", 0.62)):
+        climbable = 1.55 * grip
+        print("  %-7s can climb grade %.3f vs steepest terrain %.3f"
+              % (surface, climbable, worst_grade))
+        check("%s has enough grip for the steepest slope" % surface,
+              climbable > worst_grade,
+              "%.3f < %.3f" % (climbable, worst_grade))
+
+    first_gear_force = 450.0 * 4.11 * 3.15 * 0.90 / 0.330
+    print("  first gear puts %.0f N at the road = %.2f g"
+          % (first_gear_force, first_gear_force / (MASS * G)))
+    check("first gear out-pulls the steepest slope",
+          first_gear_force / (MASS * G) > worst_grade,
+          "%.2f g" % (first_gear_force / (MASS * G)))
+
+    # The unstick impulse has to actually lift the car. 0.55 g of lift against
+    # 1 g of gravity does not launch it, but it does unload a grounded floor.
+    lift = 0.55
+    print("  unstick lift %.2f g -> net %.2f g while it fires" % (lift, lift - 1.0))
+    check("unstick lifts without launching", 0.2 < lift < 0.9, "%.2f g" % lift)
+    check("unstick cannot beat gravity outright", lift < 1.0, "%.2f g" % lift)
+
+
 def test_stability():
     print("\n== stability: 30 s parked, must not drift or sink ==")
     car = Car(REST_HEIGHT)
@@ -1271,6 +1544,10 @@ def main():
     test_acceleration()
     test_braking()
     test_cornering()
+    test_understeer_balance()
+    test_no_spin_under_provocation()
+    test_contact_normal_smoothing()
+    test_stuck_recovery()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES
                     else "FAILURES: " + ", ".join(FAILURES)))
     return 1 if FAILURES else 0

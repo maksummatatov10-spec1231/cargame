@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="Script" path="res://scripts/game.gd" id="2_world"]
 [ext_resource type="Script" path="res://scripts/chase_camera.gd" id="3_camera"]
@@ -109,6 +109,11 @@ outline_color = Color(0, 0, 0, 0.65)
 font_size = 34
 outline_size = 5
 outline_color = Color(0, 0, 0, 0.65)
+
+[sub_resource type="LabelSettings" id="FpsLabel"]
+font_size = 18
+outline_size = 5
+outline_color = Color(0, 0, 0, 0.75)
 
 [sub_resource type="LabelSettings" id="SmallLabel"]
 font_size = 15
@@ -238,6 +243,21 @@ offset_top = -68.0
 offset_right = 700.0
 offset_bottom = -20.0
 label_settings = SubResource("SmallLabel")
+
+; Frame rate counter, top right. Always on; ~ adds the frame-time breakdown
+; underneath it.
+[node name="Fps" type="Label" parent="HUD"]
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -240.0
+offset_top = 18.0
+offset_right = -22.0
+offset_bottom = 86.0
+label_settings = SubResource("FpsLabel")
+horizontal_alignment = 2
+text = "-- fps"
 
 [node name="Debug" type="Label" parent="HUD"]
 layout_mode = 1

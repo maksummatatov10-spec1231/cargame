@@ -104,64 +104,71 @@ void fragment() {
 }
 """
 
-## Species to scatter: scene, count, scale range, slope limit, surfaces.
-const SPECIES := [
-	# Three detail bands by distance from the map centre, where the player
-	# starts. 420 full-detail trees would be 11.9 M triangles on their own.
-	#
-	# Only the near band casts shadows. Shadow rendering ignores
-	# visibility_range and redraws every caster once per cascade, so letting
-	# all 420 cast turned 12.5 M triangles into 37.5 M of shadow work per
-	# frame - that was the lag, and it dwarfed everything else in the scene.
-	{"name": "tree", "count": 70, "scale": [0.85, 1.5], "max_slope": 0.34,
-		"tint": Color(0.30, 0.40, 0.20), "collide": true, "radius": 0.55,
-		"anchor": 1.2, "wind": 0.035, "max_dist": 80.0, "cull": 170.0,
-		"shadows": true},
-	{"name": "tree_lod", "count": 180, "scale": [0.85, 1.5], "max_slope": 0.34,
-		"tint": Color(0.29, 0.39, 0.19), "collide": true, "radius": 0.55,
-		"anchor": 1.2, "wind": 0.035, "min_dist": 80.0, "max_dist": 170.0,
-		"cull": 240.0, "lod_bias": 2.0},
-	{"name": "tree_far", "count": 220, "scale": [0.85, 1.5], "max_slope": 0.34,
-		"tint": Color(0.28, 0.38, 0.19), "collide": false, "radius": 0.55,
-		"anchor": 1.2, "wind": 0.03, "min_dist": 170.0, "cull": 340.0,
-		"lod_bias": 4.0, "height": 6.87},
-	{"name": "fern_a", "count": 520, "scale": [0.7, 1.3], "max_slope": 0.42,
-		"tint": Color(0.26, 0.40, 0.18), "collide": false, "radius": 0.0,
-		"anchor": 0.1, "wind": 0.09, "cull": 75.0, "lod_bias": 2.5},
-	{"name": "fern_b", "count": 380, "scale": [0.7, 1.25], "max_slope": 0.42,
-		"tint": Color(0.24, 0.37, 0.17), "collide": false, "radius": 0.0,
-		"anchor": 0.1, "wind": 0.09, "cull": 75.0, "lod_bias": 2.5},
-	{"name": "bush_a", "count": 620, "scale": [0.8, 1.6], "max_slope": 0.5,
-		"tint": Color(0.29, 0.36, 0.18), "collide": false, "radius": 0.0,
-		"anchor": 0.05, "wind": 0.08, "cull": 70.0, "lod_bias": 2.5},
-	{"name": "bush_b", "count": 460, "scale": [0.8, 1.5], "max_slope": 0.5,
-		"tint": Color(0.31, 0.38, 0.19), "collide": false, "radius": 0.0,
-		"anchor": 0.05, "wind": 0.08, "cull": 70.0, "lod_bias": 2.5},
-	{"name": "plant", "count": 340, "scale": [0.8, 1.4], "max_slope": 0.4,
-		"tint": Color(0.33, 0.42, 0.2), "collide": false, "radius": 0.0,
-		"anchor": 0.05, "wind": 0.1, "cull": 70.0, "lod_bias": 2.5},
-	# Grass is capped so it stays under the 0.5 m crushable threshold at every
-	# scale: 0.56 m base x 0.85 = 0.48 m. Above that it would be tall enough to
-	# want collision, and it is exactly the sort of thing you should be able to
-	# drive straight through.
-	{"name": "grass_tuft", "count": 1500, "scale": [0.55, 0.85], "max_slope": 0.38,
-		"tint": Color(0.34, 0.42, 0.19), "collide": false, "radius": 0.0,
-		"anchor": 0.0, "wind": 0.13, "cull": 55.0, "lod_bias": 3.0,
-		"height": 0.56},
-	{"name": "rock_a", "count": 70, "scale": [0.25, 0.7], "max_slope": 1.0,
-		"tint": Color(0.40, 0.39, 0.37), "collide": true, "radius": 0.9,
-		"anchor": 99.0, "wind": 0.0, "cull": 200.0, "shadows": true},
-	# Rocks are solid, so they must be big enough to be worth stopping for.
-	# rock_b and rock_c used to scale down to 0.53 m and 0.49 m, which is a
-	# knee-high stone that looks like scenery but stops a car dead - that is
-	# what felt like crashing into a small plant. Their minimum size is now
-	# well above the crushable threshold so anything solid clearly looks solid.
-	{"name": "rock_b", "count": 80, "scale": [0.45, 0.8], "max_slope": 1.0,
-		"tint": Color(0.38, 0.37, 0.36), "collide": true, "radius": 0.7,
-		"anchor": 99.0, "wind": 0.0, "cull": 200.0, "height": 2.65},
-	{"name": "rock_c", "count": 120, "scale": [0.40, 0.7], "max_slope": 1.0,
-		"tint": Color(0.42, 0.41, 0.39), "collide": true, "radius": 0.5,
-		"anchor": 99.0, "wind": 0.0, "cull": 200.0, "height": 3.29},
+## The default set of species, used when the `species` list below is empty.
+##
+## These are only defaults now. The live list is an exported array of
+## [PlantSpecies] resources, so every count, size, colour and cull distance is
+## editable in the inspector without touching this file.
+##
+## The three tree entries are distance bands of the same tree: only the near
+## band uses the full-detail mesh and only the near band casts shadows. A
+## shadow caster is redrawn once per shadow cascade and shadow rendering
+## ignores the cull distance entirely, so letting all 470 trees cast turned
+## 12.5 M triangles into 37.5 M of shadow work every frame.
+const DEFAULT_SPECIES := [
+	{"mesh_name": "tree", "count": 70, "scale_min": 0.85, "scale_max": 1.5,
+		"max_slope": 0.34, "tint": Color(0.30, 0.40, 0.20), "solid": true,
+		"collision_radius": 0.55, "wind_anchor": 1.2, "wind": 0.035,
+		"max_distance": 80.0, "cull_distance": 170.0, "cast_shadows": true,
+		"mesh_height": 6.87},
+	{"mesh_name": "tree_lod", "count": 180, "scale_min": 0.85, "scale_max": 1.5,
+		"max_slope": 0.34, "tint": Color(0.29, 0.39, 0.19), "solid": true,
+		"collision_radius": 0.55, "wind_anchor": 1.2, "wind": 0.035,
+		"min_distance": 80.0, "max_distance": 170.0, "cull_distance": 240.0,
+		"lod_bias": 2.0, "mesh_height": 6.84},
+	{"mesh_name": "tree_far", "count": 220, "scale_min": 0.85, "scale_max": 1.5,
+		"max_slope": 0.34, "tint": Color(0.28, 0.38, 0.19), "solid": false,
+		"wind_anchor": 1.2, "wind": 0.03, "min_distance": 170.0,
+		"cull_distance": 340.0, "lod_bias": 4.0, "mesh_height": 6.81},
+	{"mesh_name": "fern_a", "count": 520, "scale_min": 0.7, "scale_max": 1.3,
+		"max_slope": 0.42, "tint": Color(0.26, 0.40, 0.18), "solid": false,
+		"wind_anchor": 0.1, "wind": 0.09, "cull_distance": 75.0,
+		"lod_bias": 2.5, "mesh_height": 1.73},
+	{"mesh_name": "fern_b", "count": 380, "scale_min": 0.7, "scale_max": 1.25,
+		"max_slope": 0.42, "tint": Color(0.24, 0.37, 0.17), "solid": false,
+		"wind_anchor": 0.1, "wind": 0.09, "cull_distance": 75.0,
+		"lod_bias": 2.5, "mesh_height": 1.74},
+	{"mesh_name": "bush_a", "count": 620, "scale_min": 0.8, "scale_max": 1.6,
+		"max_slope": 0.5, "tint": Color(0.29, 0.36, 0.18), "solid": false,
+		"wind_anchor": 0.05, "wind": 0.08, "cull_distance": 70.0,
+		"lod_bias": 2.5, "mesh_height": 1.18},
+	{"mesh_name": "bush_b", "count": 460, "scale_min": 0.8, "scale_max": 1.5,
+		"max_slope": 0.5, "tint": Color(0.31, 0.38, 0.19), "solid": false,
+		"wind_anchor": 0.05, "wind": 0.08, "cull_distance": 70.0,
+		"lod_bias": 2.5, "mesh_height": 1.18},
+	{"mesh_name": "plant", "count": 340, "scale_min": 0.8, "scale_max": 1.4,
+		"max_slope": 0.4, "tint": Color(0.33, 0.42, 0.2), "solid": false,
+		"wind_anchor": 0.05, "wind": 0.1, "cull_distance": 70.0,
+		"lod_bias": 2.5, "mesh_height": 1.27},
+	{"mesh_name": "grass_tuft", "count": 1500, "scale_min": 0.55,
+		"scale_max": 0.85, "max_slope": 0.38, "tint": Color(0.34, 0.42, 0.19),
+		"solid": false, "wind_anchor": 0.0, "wind": 0.13,
+		"cull_distance": 55.0, "lod_bias": 3.0, "mesh_height": 0.56},
+	{"mesh_name": "rock_a", "count": 70, "scale_min": 0.25, "scale_max": 0.7,
+		"max_slope": 1.0, "tint": Color(0.40, 0.39, 0.37), "solid": true,
+		"collision_radius": 0.9, "wind_anchor": 99.0, "wind": 0.0,
+		"cull_distance": 200.0, "cast_shadows": true, "prefers_slopes": true,
+		"ground_lean": 0.35, "roughness": 0.6, "mesh_height": 4.18},
+	{"mesh_name": "rock_b", "count": 80, "scale_min": 0.45, "scale_max": 0.8,
+		"max_slope": 1.0, "tint": Color(0.38, 0.37, 0.36), "solid": true,
+		"collision_radius": 0.7, "wind_anchor": 99.0, "wind": 0.0,
+		"cull_distance": 200.0, "prefers_slopes": true, "ground_lean": 0.35,
+		"roughness": 0.6, "mesh_height": 2.65},
+	{"mesh_name": "rock_c", "count": 120, "scale_min": 0.40, "scale_max": 0.7,
+		"max_slope": 1.0, "tint": Color(0.42, 0.41, 0.39), "solid": true,
+		"collision_radius": 0.5, "wind_anchor": 99.0, "wind": 0.0,
+		"cull_distance": 200.0, "prefers_slopes": true, "ground_lean": 0.35,
+		"roughness": 0.6, "mesh_height": 3.29},
 ]
 
 ## Where the converted assets live.
@@ -175,6 +182,35 @@ const SPECIES := [
 ## Plants shorter than this are crushable: no collision, and they bend under
 ## the wheels instead of stopping the car dead.
 @export var crushable_height := 0.5
+## An instance shorter than this never gets a collider, whatever its species
+## says. The scale ranges mean one species can produce both a full-size tree
+## and a sapling, and a waist-high invisible obstacle is the single most
+## annoying thing a map can have.
+@export var min_solid_height := 1.6
+
+## Every plant, tree and rock on the map, fully editable in the inspector.
+##
+## Open the Forest node, expand Species, and you get one entry per kind with
+## its own count, scale range, tint, cull distance and collision settings. Add
+## an entry to introduce a new plant, set count to 0 or untick enabled to
+## remove one, then tick Rebuild.
+##
+## Left empty it is filled from DEFAULT_SPECIES on the first build, so the map
+## still looks right out of the box.
+@export var species: Array[PlantSpecies] = []
+
+## Scales every count at once, for quickly trading detail against frame rate
+## without editing each species. 0.5 halves the whole map.
+@export_range(0.05, 2.0, 0.05) var density := 1.0
+
+## Restores the built-in species list, discarding any edits. Use this if you
+## have changed something into a state you cannot get back from.
+@export var reset_species := false:
+	set(value):
+		reset_species = false
+		species = _default_species()
+		if is_inside_tree():
+			build()
 
 ## Tick this in the editor to re-scatter after changing anything above.
 @export var rebuild := false:
@@ -225,36 +261,80 @@ func build() -> void:
 		_crusher.max_height = crushable_height
 		add_child(_crusher)
 
-	for species in SPECIES:
-		_scatter(species)
+	if species.is_empty():
+		species = _default_species()
 
-	print("Forest: %d plants and rocks, %d with collision" % [_placed, _colliders])
+	var skipped := 0
+	for entry in species:
+		if entry == null or not entry.enabled:
+			continue
+		skipped += _scatter(entry)
+
+	print("Forest: %d plants and rocks, %d with collision, %d too small to be solid"
+		% [_placed, _colliders, skipped])
 
 
-func _scatter(species: Dictionary) -> void:
-	var path: String = asset_dir + String(species["name"]) + ".gltf"
+## Builds the built-in list as real resources.
+func _default_species() -> Array[PlantSpecies]:
+	var out: Array[PlantSpecies] = []
+	for entry in DEFAULT_SPECIES:
+		out.append(PlantSpecies.make(entry))
+	return out
+
+
+## Loads the single mesh out of a converted glTF, or null with a warning.
+func _load_mesh(mesh_name: String) -> Mesh:
+	var path := asset_dir + mesh_name + ".gltf"
 	if not ResourceLoader.exists(path):
 		push_warning("Forest: missing asset %s" % path)
-		return
+		return null
 	var packed := load(path) as PackedScene
 	if packed == null:
-		return
+		push_warning("Forest: %s is not a scene" % path)
+		return null
 	var mesh := _find_mesh(packed.instantiate())
 	if mesh == null:
 		push_warning("Forest: no mesh inside %s" % path)
-		return
+	return mesh
+
+
+## Places one species. Returns how many instances were denied collision for
+## being too small - see _add_colliders().
+func _scatter(entry: PlantSpecies) -> int:
+	var mesh := _load_mesh(entry.mesh_name)
+	if mesh == null:
+		return 0
+
+	# The authored height decides what counts as a small plant, so read it from
+	# the mesh rather than trusting a number typed into the inspector. This is
+	# what stops a knee-high prop from being given a car-stopping collider.
+	var aabb := mesh.get_aabb()
+	if aabb.size.y > 0.0:
+		entry.mesh_height = aabb.size.y
+	if entry.collision_radius <= 0.0:
+		entry.collision_radius = maxf(aabb.size.x, aabb.size.z) * 0.25
 
 	var extent: float = _terrain.size * 0.5 - 6.0
 	var transforms: Array[Transform3D] = []
-	var attempts: int = int(species["count"]) * 4
-	var wanted: int = int(species["count"])
-	# Pulled out of a Dictionary, so a malformed entry would otherwise crash on
-	# the first instance rather than being reported here.
-	var scale_range: Array = species.get("scale", [1.0, 1.0])
-	if scale_range.size() < 2:
-		push_warning("Forest: bad scale range for %s" % species.get("name", "?"))
-		scale_range = [1.0, 1.0]
-	var max_slope: float = species["max_slope"]
+	var wanted := maxi(0, int(round(entry.count * density)))
+	if wanted == 0:
+		return 0
+	var attempts := wanted * 4
+	var lo := minf(entry.scale_min, entry.scale_max)
+	var hi := maxf(entry.scale_min, entry.scale_max)
+	var is_rock := entry.mesh_name.begins_with("rock")
+
+	# A solid prop is never allowed to be generated below the size at which it
+	# would get a collider, because the alternative is a rock you can see and
+	# drive straight through. rock_a is authored 4.18 m tall with a scale
+	# range starting at 0.25, which is a 1.05 m boulder - visible, waist high,
+	# and exactly the sort of thing that felt like hitting a small tree. The
+	# floor is raised instead of the instance being dropped, so the map keeps
+	# the same number of rocks.
+	if entry.solid and entry.mesh_height > 0.0:
+		var floor_scale := min_solid_height / entry.mesh_height
+		lo = maxf(lo, floor_scale)
+		hi = maxf(hi, lo)
 
 	for _i in attempts:
 		if transforms.size() >= wanted:
@@ -265,30 +345,27 @@ func _scatter(species: Dictionary) -> void:
 		if from_centre < clearing_radius:
 			continue
 		# Detail bands: the full-detail mesh is only used close in.
-		if species.has("max_dist") and from_centre > float(species["max_dist"]):
+		if entry.max_distance > 0.0 and from_centre > entry.max_distance:
 			continue
-		if species.has("min_dist") and from_centre < float(species["min_dist"]):
+		if entry.min_distance > 0.0 and from_centre < entry.min_distance:
 			continue
 		var slope := _terrain.sample_slope(x, z)
-		if slope > max_slope:
+		if slope > entry.max_slope:
 			continue
-		# Rocks want slopes; plants want gentler ground.
-		if String(species["name"]).begins_with("rock"):
-			if slope < 0.12 and _rng.randf() > 0.35:
-				continue
+		if entry.prefers_slopes and slope < 0.12 and _rng.randf() > 0.35:
+			continue
 		var surface := _terrain.sample_surface(x, z)
-		if surface == Terrain.Surface.ROCK and not String(species["name"]).begins_with("rock"):
+		if surface == Terrain.Surface.ROCK and not is_rock:
 			if _rng.randf() > 0.15:
 				continue
 
 		var y := _terrain.sample_height(x, z)
-		var s := _rng.randf_range(float(scale_range[0]), float(scale_range[1]))
+		var s := _rng.randf_range(lo, hi)
 		# Named xform, not basis: "basis" shadows Node3D.basis.
 		var xform := Basis(Vector3.UP, _rng.randf_range(0.0, TAU))
 		# Sit props on the slope rather than standing them all bolt upright.
 		var normal := _terrain.sample_normal(x, z)
-		var lean: float = 0.35 if String(species["name"]).begins_with("rock") else 0.5
-		var up := Vector3.UP.lerp(normal, lean).normalized()
+		var up := Vector3.UP.lerp(normal, entry.ground_lean).normalized()
 		var tilt := Basis(Vector3.UP.cross(up).normalized() if up != Vector3.UP else Vector3.RIGHT,
 			Vector3.UP.angle_to(up)) if up != Vector3.UP else Basis()
 		xform = tilt * xform
@@ -296,7 +373,7 @@ func _scatter(species: Dictionary) -> void:
 		transforms.append(Transform3D(xform, Vector3(x, y, z)))
 
 	if transforms.is_empty():
-		return
+		return 0
 
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -306,107 +383,132 @@ func _scatter(species: Dictionary) -> void:
 		mm.set_instance_transform(i, transforms[i])
 
 	var mmi := MultiMeshInstance3D.new()
-	mmi.name = String(species["name"])
+	mmi.name = entry.mesh_name
 	mmi.multimesh = mm
-	mmi.material_override = _make_material(species)
+	mmi.material_override = _make_material(entry)
 
 	# Shadows were the single biggest cost in the scene and it was not close.
 	# A shadow-casting instance is re-drawn once per shadow cascade, and shadow
 	# rendering ignores visibility_range entirely, so every full-detail tree on
 	# the whole 400 m map was being drawn three more times whether it was on
-	# screen or not: 12.5 M triangles of geometry becoming 37.5 M of shadow
-	# work every frame. Only the near, full-detail band casts now.
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	if bool(species.get("shadows", false)):
-		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	# screen or not. Only the near, full-detail band casts now.
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON \
+		if entry.cast_shadows else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 	# Distance culling. Small plants are invisible long before they are far
 	# away, so drawing them at 300 m is pure waste; the fade margin stops them
-	# popping. This is the single biggest saving on a weak machine.
-	var cull: float = float(species.get("cull", 0.0))
-	if cull > 0.0:
-		mmi.visibility_range_end = cull
-		mmi.visibility_range_end_margin = cull * 0.15
+	# popping.
+	if entry.cull_distance > 0.0:
+		mmi.visibility_range_end = entry.cull_distance
+		mmi.visibility_range_end_margin = entry.cull_distance * 0.15
 		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 	mmi.extra_cull_margin = 8.0
-	# Let Godot skip lighting maths on things too far to matter.
-	mmi.lod_bias = float(species.get("lod_bias", 1.0))
+	mmi.lod_bias = entry.lod_bias
 	add_child(mmi)
 	if Engine.is_editor_hint() and get_tree() != null:
 		mmi.owner = get_tree().edited_scene_root
-	if _is_crushable(species) and _crusher != null:
+	if _is_crushable(entry) and _crusher != null:
 		_crusher.register_material(mmi.material_override)
 	_placed += transforms.size()
 
-	if bool(species["collide"]):
-		_add_colliders(transforms, float(species["radius"]), String(species["name"]))
+	if entry.solid:
+		return _add_colliders(transforms, entry)
+	return 0
 
 
-## Trunks and rocks get a simple capsule or sphere. A convex hull per tree
-## would be more accurate, but a car hitting a tree only ever touches the
-## trunk, and hundreds of hulls would slow the broadphase down for nothing.
-func _add_colliders(transforms: Array[Transform3D], radius: float,
-		species_name: String) -> void:
+## Gives the solid props a collider. Returns how many instances were refused
+## one for being too small.
+##
+## Two things were wrong here and both of them felt like "I crashed into a
+## small tree that is not there":
+##
+##  1. The collider was sized from a number typed into the table, not from the
+##     mesh. rock_a is authored 4.18 m tall but was given a 0.9 m sphere; at
+##     its smallest scale (0.25) that is a 0.225 m ball sitting 0.09 m above
+##     the ground - a knee-high invisible bump that catches the floor of the
+##     car while the rock it belongs to looks like scenery. Colliders are now
+##     derived from the mesh AABB, so what you see is what you hit.
+##
+##  2. Nothing checked how big an *instance* was. A species is marked solid as
+##     a whole, but the scale range means the same species can produce a 6 m
+##     tree and a 1 m sapling. Anything whose real height is below
+##     min_solid_height now gets no collider at all and is registered as
+##     crushable instead, so you flatten it.
+func _add_colliders(transforms: Array[Transform3D], entry: PlantSpecies) -> int:
 	var body := StaticBody3D.new()
-	body.name = species_name + "_collision"
+	body.name = entry.mesh_name + "_collision"
 	body.collision_layer = 1
 	body.collision_mask = 1
 	var phys := PhysicsMaterial.new()
 	phys.friction = 0.9
-	phys.bounce = 0.05
+	phys.bounce = 0.0
 	body.physics_material_override = phys
 	add_child(body)
 	if Engine.is_editor_hint() and get_tree() != null:
 		body.owner = get_tree().edited_scene_root
 
-	var is_rock := species_name.begins_with("rock")
+	var is_rock := entry.mesh_name.begins_with("rock")
+	var too_small := 0
 	for t in transforms:
 		if t.origin.length() > collision_radius:
 			continue
-		var col := CollisionShape3D.new()
 		# Named prop_scale: "scale" shadows Node3D.scale.
 		var prop_scale := t.basis.get_scale().y
+		var world_height := entry.mesh_height * prop_scale
+		if world_height < min_solid_height:
+			too_small += 1
+			continue
+
+		var col := CollisionShape3D.new()
 		if is_rock:
+			# A sphere sized to the rock, sunk so its top matches the mesh.
+			# Half the visible height, centred at half the visible height,
+			# means the collider reaches the ground and the summit and nothing
+			# sticks out below.
+			var r := minf(entry.collision_radius * prop_scale, world_height * 0.5)
 			var sphere := SphereShape3D.new()
-			sphere.radius = radius * prop_scale
+			sphere.radius = maxf(r, 0.05)
 			col.shape = sphere
-			col.position = t.origin + Vector3.UP * radius * prop_scale * 0.4
+			col.position = t.origin + Vector3.UP * sphere.radius
 		else:
+			# A trunk: a thin capsule the full height of the tree. The capsule
+			# height in Godot spans the whole shape, hemispheres included, so
+			# it is the visible height and the centre is half of it.
 			var cap := CapsuleShape3D.new()
-			cap.radius = radius * prop_scale * 0.5
-			cap.height = 6.0 * prop_scale
+			cap.radius = maxf(entry.collision_radius * prop_scale * 0.5, 0.05)
+			cap.height = maxf(world_height, cap.radius * 2.0 + 0.01)
 			col.shape = cap
-			col.position = t.origin + Vector3.UP * 3.0 * prop_scale
+			col.position = t.origin + Vector3.UP * cap.height * 0.5
 		body.add_child(col)
 		_colliders += 1
 
-
-## True for plants short enough to drive over. They get no collision at all;
-## instead the shader bends them out of the way under the wheels.
-func _is_crushable(species: Dictionary) -> bool:
-	# Anything solid is never crushable.
-	if bool(species.get("collide", false)):
-		return false
-	# Everything soft bends. Grass is under the height threshold outright;
-	# ferns and bushes are taller but they are still vegetation the car should
-	# flatten rather than clip through rigidly, so they bend too - just from
-	# higher up, which the shader handles through anchor_height.
-	return true
+	if body.get_child_count() == 0:
+		body.queue_free()
+	return too_small
 
 
-func _make_material(species: Dictionary) -> ShaderMaterial:
+## True for plants the car should drive over rather than into.
+##
+## Anything not marked solid bends. Grass is under the height threshold
+## outright; ferns and bushes are taller but they are still vegetation the car
+## should flatten rather than clip through rigidly, so they bend too - just
+## from higher up, which the shader handles through wind_anchor.
+func _is_crushable(entry: PlantSpecies) -> bool:
+	return not entry.solid
+
+
+func _make_material(entry: PlantSpecies) -> ShaderMaterial:
 	var shader := Shader.new()
 	shader.code = WIND_SHADER
 	var mat := ShaderMaterial.new()
 	mat.shader = shader
-	mat.set_shader_parameter("crushable", _is_crushable(species))
-	var tint: Color = species["tint"]
-	mat.set_shader_parameter("tint", Vector3(tint.r, tint.g, tint.b))
-	mat.set_shader_parameter("wind_strength", float(species["wind"]))
-	mat.set_shader_parameter("anchor_height", float(species["anchor"]))
+	mat.set_shader_parameter("crushable", _is_crushable(entry))
+	mat.set_shader_parameter("tint",
+		Vector3(entry.tint.r, entry.tint.g, entry.tint.b))
+	mat.set_shader_parameter("wind_strength", entry.wind)
+	mat.set_shader_parameter("anchor_height", entry.wind_anchor)
 	mat.set_shader_parameter("wind_speed", _rng.randf_range(0.9, 1.4))
-	var is_rock := String(species["name"]).begins_with("rock")
-	mat.set_shader_parameter("roughness_value", 0.6 if is_rock else 0.9)
+	mat.set_shader_parameter("roughness_value", entry.roughness)
 	return mat
 
 

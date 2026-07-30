@@ -340,15 +340,27 @@ def test_performance():
                                            "forest_manifest.json")))
     tris = {a["name"]: a["tris"] for a in manifest["assets"]}
 
+    # The species table moved from a const Dictionary keyed "name"/"count"/
+    # "shadows" to PlantSpecies resources keyed "mesh_name"/"count"/
+    # "cast_shadows". This check silently matched nothing after the rename and
+    # reported a perfect 0 M of shadow work, which is exactly the sort of
+    # false pass that lets a regression through - so it now fails loudly if it
+    # cannot find the table at all.
     geometry = 0
     shadow = 0
-    for block in re.finditer(r'\{"name": "(\w+)", "count": (\d+)[^{]*?\},', src, re.S):
-        name, count = block.group(1), int(block.group(2))
+    found = 0
+    for block in re.finditer(r'\{"mesh_name": "(\w+)", "count": (\d+)(.*?)\},',
+                             src, re.S):
+        name, count, body = block.group(1), int(block.group(2)), block.group(3)
         if name not in tris:
             continue
+        found += 1
         geometry += tris[name] * count
-        if '"shadows": true' in block.group(0):
+        if '"cast_shadows": true' in body:
             shadow += tris[name] * count
+
+    check("the species table was actually parsed", found >= 8,
+          "only matched %d species" % found)
 
     scene = open(os.path.join(ROOT, "scenes", "main.tscn")).read()
     m = re.search(r"directional_shadow_mode = (\d+)", scene)

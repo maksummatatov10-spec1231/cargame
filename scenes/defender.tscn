@@ -62,7 +62,7 @@ rear_downforce = 0.0
 all_wheel_drive = true
 front_torque_split = 0.5
 differential_lock = 0.85
-stability_control = 0.75
+stability_control = 0.9
 traction_control = 0.9
 
 [node name="Hull0" type="CollisionShape3D" parent="."]
@@ -110,10 +110,10 @@ spring_length = 0.260
 spring_rate = 44000.0
 bump_damping = 4000.0
 rebound_damping = 6800.0
-anti_roll_rate = 6500.0
+anti_roll_rate = 7400.0
 nominal_load = 6379.0
 friction_coefficient = 1.22
-peak_slip_angle_deg = 11.5
+peak_slip_angle_deg = 13.0
 
 [node name="RF" type="RayCast3D" parent="Wheels"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.9154, 0.5582, -1.3955)
@@ -131,10 +131,10 @@ spring_length = 0.260
 spring_rate = 44000.0
 bump_damping = 4000.0
 rebound_damping = 6800.0
-anti_roll_rate = 6500.0
+anti_roll_rate = 7400.0
 nominal_load = 6379.0
 friction_coefficient = 1.22
-peak_slip_angle_deg = 11.5
+peak_slip_angle_deg = 13.0
 
 [node name="LR" type="RayCast3D" parent="Wheels"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.9211, 0.5582, 1.3949)
@@ -146,16 +146,16 @@ tyre_width = 0.255
 wheel_mass = 34.0
 is_steering = false
 is_driven = true
-toe_deg = 0.00
+toe_deg = 0.16
 camber_deg = 0.00
 spring_length = 0.260
 spring_rate = 41000.0
 bump_damping = 3700.0
 rebound_damping = 6200.0
-anti_roll_rate = 4000.0
+anti_roll_rate = 3500.0
 nominal_load = 6128.8
-friction_coefficient = 1.24
-peak_slip_angle_deg = 12.0
+friction_coefficient = 1.30
+peak_slip_angle_deg = 10.4
 
 [node name="RR" type="RayCast3D" parent="Wheels"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.9157, 0.5582, 1.3947)
@@ -167,16 +167,16 @@ tyre_width = 0.255
 wheel_mass = 34.0
 is_steering = false
 is_driven = true
-toe_deg = 0.00
+toe_deg = 0.16
 camber_deg = 0.00
 spring_length = 0.260
 spring_rate = 41000.0
 bump_damping = 3700.0
 rebound_damping = 6200.0
-anti_roll_rate = 4000.0
+anti_roll_rate = 3500.0
 nominal_load = 6128.8
-friction_coefficient = 1.24
-peak_slip_angle_deg = 12.0
+friction_coefficient = 1.30
+peak_slip_angle_deg = 10.4
 
 [node name="Smooth" type="Node3D" parent="."]
 script = ExtResource("8_smooth")

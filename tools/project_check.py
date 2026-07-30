@@ -280,16 +280,38 @@ def check_common_mistakes():
     # it is what makes the map visible and editable there - but not for
     # anything that touches physics state, because the editor would then write
     # runtime values into the saved scene. wheel.gd did exactly that once.
-    EDITOR_ALLOWED = {"terrain.gd", "forest.gd"}
+    # plant_species.gd is on the list because it is a plain Resource holding
+    # numbers - it has no _process, no _physics_process and touches no node -
+    # and a Resource has to be @tool for its exports to appear in the
+    # inspector at all. The allowance is verified rather than trusted: a
+    # script on this list that grows a physics callback still fails.
+    EDITOR_ALLOWED = {"terrain.gd", "forest.gd", "plant_species.gd"}
     tools = [n for n, t in src.items()
              if t.lstrip().startswith("@tool") and n not in EDITOR_ALLOWED]
     check("no physics script is marked @tool", not tools, ", ".join(tools))
+
+    physics_in_editor = [
+        n for n in EDITOR_ALLOWED
+        if re.search(r"func _physics_process|apply_force|apply_torque|"
+                     r"linear_velocity|angular_velocity", src.get(n, ""))]
+    check("the editor-allowed scripts really do not touch physics",
+          not physics_in_editor, ", ".join(physics_in_editor))
+    # The world builders must offer a rebuild button. plant_species.gd is a
+    # data resource, not a builder - it has nothing to rebuild - so it is
+    # checked for being valid inspector data instead.
+    WORLD_BUILDERS = {"terrain.gd", "forest.gd"}
     for name in EDITOR_ALLOWED:
-        if name in src:
-            check("%s builds in the editor" % name,
-                  src[name].lstrip().startswith("@tool"))
+        if name not in src:
+            continue
+        check("%s builds in the editor" % name,
+              src[name].lstrip().startswith("@tool"))
+        if name in WORLD_BUILDERS:
             check("  and can be rebuilt from the inspector",
                   "rebuild" in src[name] and "func build" in src[name])
+        else:
+            check("  and exposes its fields to the inspector",
+                  "extends Resource" in src[name]
+                  and src[name].count("@export") >= 5)
 
     # Writing to a SpringArm3D child's transform fights the arm.
     cam = src.get("chase_camera.gd", "")
@@ -325,6 +347,139 @@ def check_types():
           "" if ok else r.stdout.strip().splitlines()[-1])
 
 
+def check_editable_forest():
+    """The vegetation must be editable from the inspector, not only in code."""
+    print("\n== forest is editable ==")
+    forest = open(os.path.join(ROOT, "scripts", "forest.gd")).read()
+    species = open(os.path.join(ROOT, "scripts", "plant_species.gd")).read()
+
+    check("plant species are a Resource, not a const Dictionary",
+          "extends Resource" in species and "class_name PlantSpecies" in species)
+    check("the species list is exported",
+          re.search(r"@export var species\s*:\s*Array\[PlantSpecies\]", forest)
+          is not None)
+    check("PlantSpecies is a @tool script so it works in the editor",
+          species.lstrip().startswith("@tool"))
+
+    # Every field a player would reasonably want to change must be exported.
+    for field in ("count", "enabled", "scale_min", "scale_max", "tint",
+                  "cull_distance", "cast_shadows", "solid", "max_slope"):
+        check("  %s is editable" % field,
+              re.search(r"@export[^\n]*\bvar %s\b" % field, species) is not None,
+              "not exported")
+
+    check("there is a global density control",
+          "var density" in forest and "@export" in forest)
+    check("the list can be restored after a bad edit",
+          "reset_species" in forest)
+    check("rebuilding from the inspector still works",
+          "@export var rebuild" in forest)
+    # The old hard-coded table must be gone as the live source of truth.
+    check("nothing reads the old const table at runtime",
+          "for species in SPECIES" not in forest)
+
+
+def check_no_tiny_colliders():
+    """No solid prop may be small enough to be an invisible obstacle.
+
+    The complaint was crashing into small trees. Two separate causes:
+    colliders sized from a typed-in number rather than the mesh, and species
+    whose scale range let them generate knee-high instances that still got a
+    car-stopping collider.
+    """
+    print("\n== no small solid props ==")
+    forest = open(os.path.join(ROOT, "scripts", "forest.gd")).read()
+
+    m = re.search(r"@export var min_solid_height\s*:=\s*([\d.]+)", forest)
+    check("there is a minimum height for solid props", m is not None)
+    if not m:
+        return
+    floor_h = float(m.group(1))
+    print("  minimum solid height: %.2f m" % floor_h)
+    check("the minimum is above knee height", floor_h >= 1.0,
+          "%.2f m" % floor_h)
+
+    check("instances below it are skipped",
+          "if world_height < min_solid_height" in forest)
+    check("solid species cannot be scaled below it",
+          "floor_scale" in forest and "min_solid_height / entry.mesh_height" in forest)
+    check("collider size comes from the mesh, not a typed-in number",
+          "mesh.get_aabb()" in forest and "entry.mesh_height = aabb.size.y" in forest)
+
+    # Work out, for every default species, the smallest instance it can make.
+    entries = re.findall(
+        r'\{"mesh_name": "(\w+)".*?\}', forest, re.S)
+    table = re.search(r"const DEFAULT_SPECIES := \[(.*?)\n\]", forest, re.S)
+    if table is None:
+        check("the default table can be parsed", False)
+        return
+    bad = []
+    for block in re.finditer(r'\{"mesh_name": "(\w+)"(.*?)\},', table.group(1), re.S):
+        name, body = block.group(1), block.group(2)
+        solid = '"solid": true' in body
+        if not solid:
+            continue
+        sm = re.search(r'"scale_min": ([\d.]+)', body)
+        hm = re.search(r'"mesh_height": ([\d.]+)', body)
+        if not sm or not hm:
+            continue
+        smallest = float(sm.group(1)) * float(hm.group(1))
+        raised = max(float(sm.group(1)), floor_h / float(hm.group(1))) * float(hm.group(1))
+        print("  %-9s smallest was %.2f m -> now %.2f m" % (name, smallest, raised))
+        if raised < floor_h - 1e-6:
+            bad.append("%s %.2f m" % (name, raised))
+    check("no solid species can produce a sub-threshold instance",
+          not bad, ", ".join(bad))
+
+
+def check_fps_counter():
+    print("\n== fps counter ==")
+    hud = open(os.path.join(ROOT, "scripts", "hud.gd")).read()
+    main = open(os.path.join(ROOT, "scenes", "main.tscn")).read()
+
+    check("there is an Fps label in the HUD scene",
+          '[node name="Fps" type="Label" parent="HUD"]' in main)
+    check("the script has the matching @onready",
+          re.search(r"@onready var _fps\s*:\s*Label\s*=\s*\$Fps", hud) is not None)
+    check("it is updated every frame", "_update_fps(delta)" in hud)
+    check("the reading is averaged, not a single frame",
+          "FPS_WINDOW" in hud and "_frames" in hud)
+    check("the worst frame in the window is reported too",
+          "_worst_frame" in hud)
+    check("draw calls and triangles are available for diagnosis",
+          "RENDER_TOTAL_DRAW_CALLS_IN_FRAME" in hud
+          and "RENDER_TOTAL_PRIMITIVES_IN_FRAME" in hud)
+
+
+def check_camera_smoothing():
+    """The camera and the car model must be on the same clock.
+
+    The model hangs off a TransformSmoothing node and moves at the display
+    rate. If the camera moves in 120 Hz steps, the difference - which is what
+    is on screen - is not smooth, however smooth the simulation is.
+    """
+    print("\n== camera and model share a clock ==")
+    cam = open(os.path.join(ROOT, "scripts", "chase_camera.gd")).read()
+
+    check("the camera does its work in _process, not _physics_process",
+          re.search(r"func _process\(delta: float\) -> void:", cam) is not None)
+    check("_physics_process only samples the target",
+          "_curr_target = _target.global_transform" in cam)
+    check("it interpolates between physics ticks",
+          "Engine.get_physics_interpolation_fraction()" in cam)
+    check("velocity is interpolated too, so the fov and pitch do not step",
+          "_prev_velocity.lerp(_curr_velocity" in cam)
+    check("a teleport snaps instead of flying across the map",
+          "> 8.0" in cam)
+
+    # Nothing may still read the raw body transform during _process.
+    body = cam[cam.index("func _process(delta: float)"):]
+    body = body[:body.index("## Rolls") if "## Rolls" in body else len(body)]
+    raw = re.findall(r"_target\.global_(?:position|transform|rotation)", body)
+    check("_process never reads the un-interpolated body transform",
+          not raw, "%d raw reads" % len(raw))
+
+
 def main():
     print("Godot project validation")
     check_scenes()
@@ -334,6 +489,10 @@ def main():
     check_all_assets()
     check_common_mistakes()
     check_types()
+    check_editable_forest()
+    check_no_tiny_colliders()
+    check_fps_counter()
+    check_camera_smoothing()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES else "FAILURES: " + ", ".join(FAILURES)))
     return 1 if FAILURES else 0
 

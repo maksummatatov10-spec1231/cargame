@@ -112,9 +112,34 @@ signal gear_changed(gear: int)
 @export var traction_headroom := 1.15
 ## Stability control: trims torque and adds a corrective yaw moment when the
 ## car rotates faster than the steering asks for.
-@export_range(0.0, 1.0) var stability_control := 0.6
+## Raised from 0.6. The chassis is now set up to understeer rather than
+## oversteer, so the ESC very rarely has anything to do; when it does, it
+## should act decisively.
+@export_range(0.0, 1.0) var stability_control := 0.85
 ## Yaw error in rad/s that the stability control tolerates before it acts.
-@export var stability_deadband := 0.18
+## Tightened from 0.18: catching a slide at 0.10 rad/s is a correction the
+## driver never notices, catching it at 0.18 is already a slide.
+@export var stability_deadband := 0.10
+
+@export_group("Recovery")
+## The car is considered stuck when it has been trying to move but has not,
+## for this long. Measured on the map: the worst crest rises 1.00 m over the
+## 2.63 m wheelbase, so the floor grounds out long before the wheels lose
+## grip. Power is not the problem - the first gear puts 15.9 kN at the road,
+## 1.08 g, against a steepest slope of 0.85 - the car simply beaches.
+@export var stuck_time := 1.1
+## Speed below which the car counts as not moving, m/s.
+@export var stuck_speed := 0.45
+## Vertical impulse used to unstick the car, as a multiple of its weight.
+## Applied as a short lift plus a nudge in the direction being asked for, so
+## a beached car climbs off the crest instead of teleporting.
+@export var unstick_lift := 0.55
+## How long an unstick push lasts, seconds.
+@export var unstick_duration := 0.35
+## Automatically right the car when it ends up on its roof.
+@export var auto_right := true
+## How long the car must be inverted before it is rolled back over.
+@export var flip_time := 2.5
 
 @export_group("Aerodynamics")
 ## Drag area, Cd * A in m^2.
@@ -151,6 +176,9 @@ var _steer_position := 0.0
 var _shift_timer := 0.0
 var _reverse_hold := 0.0
 var _tc_cut := 0.0
+var _stuck_timer := 0.0
+var _unstick_timer := 0.0
+var _flip_timer := 0.0
 var _reverse_armed := false
 var _brake_was_down := false
 var _engine_speed := 0.0            ## rad/s
@@ -303,6 +331,9 @@ func reset_to_spawn() -> void:
 	raw_forward = 0.0
 	raw_backward = 0.0
 	_tc_cut = 0.0
+	_stuck_timer = 0.0
+	_unstick_timer = 0.0
+	_flip_timer = 0.0
 	_engine_speed = idle_rpm * TAU / 60.0
 
 
@@ -331,6 +362,7 @@ func _physics_process(delta: float) -> void:
 		w.apply_forces(self)
 
 	_apply_aerodynamics(vel)
+	_update_recovery(delta, forward_speed)
 	_update_telemetry()
 
 
@@ -362,6 +394,20 @@ func _update_steering() -> void:
 
 
 func _update_suspension(delta: float) -> void:
+	# Hand each wheel the terrain's interpolated normal for where it was last
+	# tick, so the suspension force is applied along a continuous direction
+	# rather than the per-triangle normal the raycast reports. The raw normal
+	# steps by up to 31.8 degrees at a cell boundary, which under 14.7 kN of
+	# load is a 7.7 kN sideways kick in one tick - the shake. See
+	# RayWheel.normal_smoothing.
+	if _terrain != null:
+		for w in _wheels:
+			if w.grounded:
+				w.terrain_normal = _terrain.sample_normal(
+					w.contact_point.x, w.contact_point.z)
+			else:
+				w.terrain_normal = Vector3.ZERO
+
 	# Anti-roll bars need the travel of the opposite wheel; using last tick's
 	# value keeps both sides symmetric instead of favouring whichever is
 	# evaluated first.
@@ -675,6 +721,93 @@ func _apply_stability_control(forward_speed: float) -> void:
 	# A gentle direct moment as well, so it responds immediately.
 	var moment := -correction * mass * 0.55 * stability_control
 	apply_torque(global_basis.y * moment)
+
+
+## Gets the car out of the two ways it can be stranded.
+##
+## Neither of these is a grip problem. First gear puts 15.9 kN at the road,
+## which is 1.08 g, and the steepest ground on the whole map is a 0.85 grade -
+## even on dirt (effective mu 0.96) there is nothing here the car cannot climb.
+## What actually happens is geometric:
+##
+##  1. **Beaching.** The worst crest on the map rises 1.00 m over the 2.63 m
+##     wheelbase. The body sits about 0.2 m above the line between the contact
+##     patches, so the floor grounds out and the wheels lift off. No amount of
+##     throttle helps because no wheel is touching anything.
+##  2. **On its roof.** Nothing in the simulation can ever right it.
+##
+## The fix is deliberately mild: it only fires when the car is being asked to
+## move and genuinely is not, it lifts rather than teleports, and it stops as
+## soon as a wheel finds grip again. Driving normally never triggers it.
+func _update_recovery(delta: float, forward_speed: float) -> void:
+	var upright := global_basis.y.dot(Vector3.UP)
+
+	# --- on its roof --------------------------------------------------- #
+	if auto_right and upright < -0.2 and linear_velocity.length() < 2.0:
+		_flip_timer += delta
+		if _flip_timer > flip_time:
+			_right_the_car()
+			_flip_timer = 0.0
+		return
+	_flip_timer = 0.0
+
+	# --- beached ------------------------------------------------------- #
+	var wants_to_move := maxf(raw_forward, raw_backward) > 0.2
+	var moving := absf(forward_speed) > stuck_speed \
+		or linear_velocity.length() > stuck_speed
+	var wheels_down := 0
+	for w in _wheels:
+		if w.grounded and w.spring_force > 1.0:
+			wheels_down += 1
+
+	# Being grounded on three or four wheels and simply not accelerating is a
+	# driving problem, not a stuck one, so only a car that has lost most of
+	# its contact patches counts.
+	if wants_to_move and not moving and wheels_down < 2:
+		_stuck_timer += delta
+	else:
+		_stuck_timer = maxf(0.0, _stuck_timer - delta * 2.0)
+
+	if _stuck_timer > stuck_time and _unstick_timer <= 0.0:
+		_unstick_timer = unstick_duration
+		_stuck_timer = 0.0
+
+	if _unstick_timer > 0.0:
+		_unstick_timer = maxf(0.0, _unstick_timer - delta)
+		# Lift the whole car just enough to unload the floor, and push it the
+		# way the driver is asking. Applied at the centre of mass so it does
+		# not spin the car.
+		var lift := Vector3.UP * mass * 9.81 * unstick_lift
+		var direction := -global_basis.z if raw_forward > raw_backward else global_basis.z
+		# Along the ground, not into it.
+		direction = (direction - Vector3.UP * direction.dot(Vector3.UP)).normalized()
+		apply_central_force(lift + direction * mass * 2.6)
+		# Kill the roll and pitch rates so it settles flat rather than
+		# bouncing off at an angle.
+		angular_velocity *= 0.86
+
+
+## Rolls the car back onto its wheels, in place, at rest.
+func _right_the_car() -> void:
+	var yaw := global_basis.get_euler().y
+	var lift := 0.6
+	if _terrain != null:
+		lift = _terrain.sample_height(global_position.x, global_position.z) \
+			+ 0.8 - global_position.y
+		lift = maxf(lift, 0.4)
+	var upright := Transform3D(Basis(Vector3.UP, yaw),
+		global_position + Vector3.UP * lift)
+	PhysicsServer3D.body_set_state(get_rid(),
+		PhysicsServer3D.BODY_STATE_TRANSFORM, upright)
+	PhysicsServer3D.body_set_state(get_rid(),
+		PhysicsServer3D.BODY_STATE_LINEAR_VELOCITY, Vector3.ZERO)
+	PhysicsServer3D.body_set_state(get_rid(),
+		PhysicsServer3D.BODY_STATE_ANGULAR_VELOCITY, Vector3.ZERO)
+	linear_velocity = Vector3.ZERO
+	angular_velocity = Vector3.ZERO
+	for w in _wheels:
+		w.spin = 0.0
+		w.reset_state()
 
 
 func _distribute_drive(axle_torque: float) -> void:

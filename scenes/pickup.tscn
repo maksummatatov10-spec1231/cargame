@@ -108,10 +108,10 @@ spring_length = 0.240
 spring_rate = 49000.0
 bump_damping = 4200.0
 rebound_damping = 7100.0
-anti_roll_rate = 9000.0
+anti_roll_rate = 10200.0
 nominal_load = 6729.7
 friction_coefficient = 1.28
-peak_slip_angle_deg = 10.5
+peak_slip_angle_deg = 12.0
 
 [node name="RF" type="RayCast3D" parent="Wheels"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.8389, 0.5806, -1.4510)
@@ -129,10 +129,10 @@ spring_length = 0.240
 spring_rate = 49000.0
 bump_damping = 4200.0
 rebound_damping = 7100.0
-anti_roll_rate = 9000.0
+anti_roll_rate = 10200.0
 nominal_load = 6729.7
 friction_coefficient = 1.28
-peak_slip_angle_deg = 10.5
+peak_slip_angle_deg = 12.0
 
 [node name="LR" type="RayCast3D" parent="Wheels"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.8419, 0.5806, 1.6790)
@@ -144,16 +144,16 @@ tyre_width = 0.285
 wheel_mass = 36.0
 is_steering = false
 is_driven = true
-toe_deg = 0.05
+toe_deg = 0.18
 camber_deg = -0.50
 spring_length = 0.240
 spring_rate = 44000.0
 bump_damping = 3800.0
 rebound_damping = 6400.0
-anti_roll_rate = 5000.0
+anti_roll_rate = 4400.0
 nominal_load = 5287.6
-friction_coefficient = 1.30
-peak_slip_angle_deg = 11.0
+friction_coefficient = 1.36
+peak_slip_angle_deg = 9.8
 
 [node name="RR" type="RayCast3D" parent="Wheels"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.8389, 0.5806, 1.6790)
@@ -165,16 +165,16 @@ tyre_width = 0.285
 wheel_mass = 36.0
 is_steering = false
 is_driven = true
-toe_deg = 0.05
+toe_deg = 0.18
 camber_deg = -0.50
 spring_length = 0.240
 spring_rate = 44000.0
 bump_damping = 3800.0
 rebound_damping = 6400.0
-anti_roll_rate = 5000.0
+anti_roll_rate = 4400.0
 nominal_load = 5287.6
-friction_coefficient = 1.30
-peak_slip_angle_deg = 11.0
+friction_coefficient = 1.36
+peak_slip_angle_deg = 9.8
 
 [node name="Smooth" type="Node3D" parent="."]
 script = ExtResource("8_smooth")

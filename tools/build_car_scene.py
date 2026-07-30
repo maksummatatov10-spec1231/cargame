@@ -53,11 +53,27 @@ PRESETS = {
         "front_rate": 52800.0, "rear_rate": 53500.0,
         "front_bump": 3090.0, "front_reb": 5270.0,
         "rear_bump": 2970.0, "rear_reb": 5070.0,
-        "front_arb": 14000.0, "rear_arb": 9500.0,
+        # Roll stiffness moved rearwards. A front-heavy anti-roll bar loads the
+        # outside front tyre harder in a corner, and a tyre carrying more load
+        # makes proportionally less grip (load sensitivity), so a front-biased
+        # bar is the classic way to dial *in* understeer. 14000/9500 was 59.6%
+        # front, which is a track setup.
+        "front_arb": 15600.0, "rear_arb": 7600.0,
         "camber": {"front": -1.4, "rear": -1.9},
-        "toe": {"front": 0.05, "rear": 0.12},
-        "mu": {"front": 1.55, "rear": 1.58},
-        "peak_sa": {"front": 8.0, "rear": 8.8},
+        # Rear toe-in is what stops a rear-drive car stepping out on lift-off:
+        # the outside rear tyre gains slip angle in the direction that resists
+        # the yaw. 0.12 deg is nothing; road BMWs run about 0.2 deg a side.
+        "toe": {"front": 0.05, "rear": 0.22},
+        "mu": {"front": 1.55, "rear": 1.62},
+        # The understeer gradient is K = Wf/Cf - Wr/Cr, and it has to be
+        # positive or the car is unstable: at K < 0 there is a critical speed
+        # above which any disturbance diverges and the car spins. It was
+        # -0.408 deg/g, i.e. genuinely oversteering, with a critical speed of
+        # 217 km/h. Making the rear tyres peak at a smaller slip angle than
+        # the fronts stiffens the rear axle and reverses that. Now +1.37
+        # deg/g: mild, progressive understeer with a 118 km/h characteristic
+        # speed, which is what a fast road car actually feels like.
+        "peak_sa": {"front": 9.2, "rear": 7.4},
         "wheel_mass": {"front": 20.0, "rear": 22.0},
         "body_size": [1.80, 1.42, 4.38],
     },
@@ -83,12 +99,14 @@ PRESETS = {
         "front_rate": 49000.0, "rear_rate": 44000.0,
         "front_bump": 4200.0, "front_reb": 7100.0,
         "rear_bump": 3800.0, "rear_reb": 6400.0,
-        "front_arb": 9000.0, "rear_arb": 5000.0,
+        "front_arb": 10200.0, "rear_arb": 4400.0,
         "camber": {"front": -0.5, "rear": -0.5},
-        "toe": {"front": 0.10, "rear": 0.05},
+        "toe": {"front": 0.10, "rear": 0.18},
         # Chunky off-road tyres: less peak grip on tarmac, more slip angle.
-        "mu": {"front": 1.28, "rear": 1.30},
-        "peak_sa": {"front": 10.5, "rear": 11.0},
+        "mu": {"front": 1.28, "rear": 1.36},
+        # Was -0.258 deg/g (oversteering). Now +2.17: a tall 4x4 should push
+        # wide well before it rotates.
+        "peak_sa": {"front": 12.0, "rear": 9.8},
         "wheel_mass": {"front": 34.0, "rear": 36.0},
         "body_size": [2.05, 2.00, 5.50],
     },
@@ -116,12 +134,13 @@ PRESETS = {
         "front_bump": 4000.0, "front_reb": 6800.0,
         "rear_bump": 3700.0, "rear_reb": 6200.0,
         # Deliberately soft bars: articulation matters more than roll control.
-        "front_arb": 6500.0, "rear_arb": 4000.0,
+        "front_arb": 7400.0, "rear_arb": 3500.0,
         "camber": {"front": 0.0, "rear": 0.0},
-        "toe": {"front": 0.08, "rear": 0.0},
+        "toe": {"front": 0.08, "rear": 0.16},
         # All-terrain tyres: modest tarmac grip, generous slip angle.
-        "mu": {"front": 1.22, "rear": 1.24},
-        "peak_sa": {"front": 11.5, "rear": 12.0},
+        "mu": {"front": 1.22, "rear": 1.30},
+        # Was -0.251 deg/g. Now +2.66.
+        "peak_sa": {"front": 13.0, "rear": 10.4},
         "wheel_mass": {"front": 32.0, "rear": 34.0},
         "body_size": [1.97, 1.97, 4.70],
     },
@@ -195,7 +214,7 @@ def build(asset_dir, out_path, preset_name="bmw"):
         lines.append("front_torque_split = 0.5")
         lines.append("differential_lock = 0.85")
         # Tall and softly sprung, so it needs the assists more than the others.
-        lines.append("stability_control = 0.75")
+        lines.append("stability_control = 0.9")
         lines.append("traction_control = 0.9")
     elif is_pickup:
         # A tall, heavy 4x4 is geared shorter and revs lower than the coupe.
