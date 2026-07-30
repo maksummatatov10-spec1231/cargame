@@ -114,6 +114,24 @@ void fragment() {
 @export var feature_size := 190.0
 ## Reproducible layout.
 @export var noise_seed := 20260730
+## Carve a dirt road across the map.
+##
+## The road is not a mesh. It is cut into the heightfield and painted into the
+## surface map that already exists, so it costs ZERO extra draw calls, zero
+## extra triangles, and the tyre model picks up its grip and rolling drag for
+## free through sample_surface(). A separate road mesh would have needed its
+## own draw call, its own collision, and z-fighting where it met the ground.
+@export var road_enabled := true
+## Half-width of the running surface in metres.
+@export var road_width := 4.2
+## Width of the graded shoulder either side, where the ground blends back.
+@export var road_shoulder := 3.4
+## How strongly the road flattens what it crosses. 1 = perfectly level,
+## 0 = follows the terrain exactly.
+@export_range(0.0, 1.0) var road_flatten := 0.82
+## How far the road wanders, in metres. A dead straight road across a
+## procedural landscape looks like a runway.
+@export var road_wander := 46.0
 ## Radius around the origin kept flat, so the car has somewhere to spawn.
 @export var flat_radius := 26.0
 ## How far beyond [member flat_radius] the ground blends into the hills.
@@ -230,6 +248,18 @@ func _generate() -> void:
 				t = t * t * (3.0 - 2.0 * t)
 				h = lerpf(_plateau_height, h, t)
 
+			# Grade the road in. Full flattening on the running surface,
+			# easing out across the shoulder so there is no step at the edge.
+			if road_enabled:
+				var offset := road_offset(wx, wz)
+				if offset < road_width + road_shoulder:
+					var t := clampf(
+						(offset - road_width) / maxf(road_shoulder, 0.01),
+						0.0, 1.0)
+					t = t * t * (3.0 - 2.0 * t)
+					var blend := road_flatten * (1.0 - t)
+					h = lerpf(h, _road_height(wz), blend)
+
 			heights[z * resolution + x] = h
 
 	_classify_surfaces()
@@ -254,7 +284,52 @@ func _classify_surfaces() -> void:
 				var patch := _value_noise(x * _cell / 55.0, z * _cell / 55.0, 909)
 				if patch > 0.68:
 					s = Surface.DIRT
+
+			# The road wins over everything else. Painting it into the surface
+			# map is the whole trick: the shader already blends grass/dirt/rock
+			# from vertex colour, and wheel.gd already reads grip and rolling
+			# drag per surface, so the road becomes both visible and drivable
+			# without a single new node.
+			if road_enabled:
+				var wx := x * _cell - _half
+				var wz := z * _cell - _half
+				if road_offset(wx, wz) < road_width:
+					s = Surface.DIRT
 			surfaces[i] = s
+
+
+## Distance from a world position to the centre line of the road, in metres,
+## and the road's own height there.
+##
+## The centre line is a sine curve running north-south through the spawn
+## point, so it always passes the car and always has corners. Solving the
+## exact nearest point on a sine is not worth it - the curve is shallow, so
+## sampling the horizontal offset at this z is accurate to a few centimetres
+## and costs one sin() instead of an iteration.
+func road_offset(wx: float, wz: float) -> float:
+	if not road_enabled:
+		return INF
+	var centre := sin(wz / road_wander) * road_wander * 0.42 \
+		+ sin(wz / (road_wander * 2.7) + 1.3) * road_wander * 0.22
+	return absf(wx - centre)
+
+
+## Height the road surface wants to sit at, before blending.
+##
+## Averaged along the direction of travel, so the road grades through bumps
+## instead of inheriting every one of them - which is what makes a dirt track
+## read as a track rather than as painted grass.
+func _road_height(wz: float) -> float:
+	var total := 0.0
+	var samples := 9
+	var span := 11.0
+	for i in samples:
+		var t := (float(i) / float(samples - 1) - 0.5) * 2.0 * span
+		var z := wz + t
+		var centre := sin(z / road_wander) * road_wander * 0.42 \
+			+ sin(z / (road_wander * 2.7) + 1.3) * road_wander * 0.22
+		total += _fractal(centre, z) * height_scale
+	return total / float(samples)
 
 
 ## Mean terrain height on a circle of the given radius, before levelling.

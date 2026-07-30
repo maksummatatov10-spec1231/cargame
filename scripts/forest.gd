@@ -180,6 +180,29 @@ const DEFAULT_SPECIES := [
 		"scale_max": 0.85, "max_slope": 0.38, "tint": Color(0.34, 0.42, 0.19),
 		"solid": false, "wind_anchor": 0.0, "wind": 0.13,
 		"cull_distance": 55.0, "lod_bias": 3.0, "mesh_height": 0.56},
+	# Three species recovered from untitled.fbx, which had never been used.
+	# It is the only uploaded asset containing a flower, and its grasses are
+	# a different shape from the existing tuft, which breaks up the repetition
+	# of a single ground-cover mesh.
+	#
+	# The originals are dense clumps - 2,298 / 1,467 / 448 triangles for
+	# plants about 0.2 m tall - so they were run through
+	# tools/mesh_decimate.py first: 342 / 122 / 78 triangles, with the
+	# bounding box preserved to within 3 cm and no degenerate faces.
+	{"mesh_name": "grass_wide", "count": 420, "scale_min": 0.8,
+		"scale_max": 1.6, "max_slope": 0.36, "tint": Color(0.33, 0.44, 0.20),
+		"solid": false, "wind_anchor": 0.0, "wind": 0.12,
+		"cull_distance": 48.0, "lod_bias": 3.0, "mesh_height": 0.22},
+	{"mesh_name": "grass_fine", "count": 700, "scale_min": 0.8,
+		"scale_max": 1.7, "max_slope": 0.38, "tint": Color(0.36, 0.46, 0.21),
+		"solid": false, "wind_anchor": 0.0, "wind": 0.14,
+		"cull_distance": 45.0, "lod_bias": 3.0, "mesh_height": 0.21},
+	# Flowers are sparse on purpose: a meadow of solid daisies looks wrong,
+	# and scattered ones are what the eye reads as variety.
+	{"mesh_name": "daisy", "count": 260, "scale_min": 0.9, "scale_max": 1.5,
+		"max_slope": 0.30, "tint": Color(0.86, 0.88, 0.72), "solid": false,
+		"wind_anchor": 0.0, "wind": 0.16, "cull_distance": 40.0,
+		"lod_bias": 3.0, "mesh_height": 0.17},
 	{"mesh_name": "rock_a", "count": 70, "scale_min": 0.25, "scale_max": 0.7,
 		"max_slope": 1.0, "tint": Color(0.40, 0.39, 0.37), "solid": true,
 		"collision_radius": 0.9, "wind_anchor": 99.0, "wind": 0.0,
@@ -417,6 +440,15 @@ func _scatter(entry: PlantSpecies) -> int:
 			continue
 		if entry.min_distance > 0.0 and from_centre < entry.min_distance:
 			continue
+		# Keep the road clear. Solid props are pushed right off it plus a
+		# margin; ground cover is allowed onto the verge but not the running
+		# surface, which is what makes the edge look used rather than mown.
+		var road := _terrain.road_offset(x, z)
+		var clearance := _terrain.road_width \
+			+ (_terrain.road_shoulder if entry.solid else 0.6)
+		if road < clearance:
+			continue
+
 		var slope := _terrain.sample_slope(x, z)
 		if slope > entry.max_slope:
 			continue

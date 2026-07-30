@@ -47,6 +47,21 @@ WANTED = {
     "rock_b": ("tree+asset.fbx", "Cube.002", 0.30),
     "rock_c": ("tree+asset.fbx", "Cube.001", 0.22),
     "grass_patch": ("grass.fbx", "Wild Grass Patch 2", 1.0),
+    # From untitled.fbx, which had never been used. It carries three species
+    # that the map was missing entirely - notably the only flower in any of
+    # the uploaded assets. The file also bakes 5,000 scattered copies of them
+    # as Model nodes; those are ignored, because Forest scatters its own with
+    # a MultiMesh and importing pre-placed duplicates would be 5,000 separate
+    # nodes for no benefit.
+    # collect() names a geometry after the Model it is connected to, and in
+    # this file every geometry is wired to the FIRST of its 5,000 duplicates,
+    # so the names come out as "Plane|<species>|Dupli|<n>".
+    "grass_wide": ("untitled.fbx",
+                   "Plane|Grass_Basic_A_spring-summer|Dupli|4396", 1.0),
+    "grass_fine": ("untitled.fbx",
+                   "Plane|Grass_Basic_D_spring-summer|Dupli|4399", 1.0),
+    "daisy": ("untitled.fbx",
+              "Plane|Flower_Daisy_A_spring-summer|Dupli|1099.1", 1.0),
 }
 
 

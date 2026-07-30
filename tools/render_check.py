@@ -413,6 +413,128 @@ def test_performance():
     check("no full-scene GI passes are enabled", not heavy, ", ".join(heavy))
 
 
+def test_dirt_road():
+    """The dirt road must be a real, drivable, zero-cost feature.
+
+    It is carved into the heightfield and painted into the surface map that
+    already exists, rather than being a mesh laid on top. That means no extra
+    draw call, no extra triangles, no separate collision and no z-fighting -
+    and the tyre model picks up dirt grip and rolling drag for free, because
+    wheel.gd already reads the surface type.
+    """
+    print("\n== dirt road ==")
+    terrain = open(os.path.join(ROOT, "scripts", "terrain.gd")).read()
+    forest = open(os.path.join(ROOT, "scripts", "forest.gd")).read()
+
+    check("the road is exposed as a setting", "@export var road_enabled" in terrain)
+    check("it is cut into the heightfield", "_road_height(wz)" in terrain)
+    check("it is painted into the surface map",
+          "if road_offset(wx, wz) < road_width:" in terrain)
+    check("no mesh, no extra draw call",
+          "MeshInstance3D" not in terrain.split("func road_offset")[1][:2000])
+    check("the forest keeps off it", "road_offset" in forest)
+    check("solid props clear the shoulder too",
+          "_terrain.road_shoulder if entry.solid" in forest)
+
+    # Reproduce the terrain maths and confirm the road is actually drivable.
+    size, res, feature, hscale = 400.0, 257, 190.0, 34.0
+    width = float(re.search(r"@export var road_width := ([\d.]+)", terrain).group(1))
+    shoulder = float(re.search(r"@export var road_shoulder := ([\d.]+)",
+                               terrain).group(1))
+    flatten = float(re.search(r"var road_flatten := ([\d.]+)", terrain).group(1))
+    wander = float(re.search(r"@export var road_wander := ([\d.]+)",
+                             terrain).group(1))
+
+    def h2(x, y, salt):
+        n = math.sin(x * 127.1 + y * 311.7 + salt * 74.7) * 43758.5453
+        return n - math.floor(n)
+
+    def vnoise(x, y, salt):
+        xi, yi = math.floor(x), math.floor(y)
+        xf, yf = x - xi, y - yi
+        u = xf * xf * (3 - 2 * xf)
+        v = yf * yf * (3 - 2 * yf)
+        a, b = h2(xi, yi, salt), h2(xi + 1, yi, salt)
+        c, d = h2(xi, yi + 1, salt), h2(xi + 1, yi + 1, salt)
+        return (a + (b - a) * u) + ((c - a) + (d - c) * u - (b - a) * u) * v
+
+    def fractal(wx, wz):
+        total, amp, freq, norm = 0.0, 1.0, 1.0 / feature, 0.0
+        for o in range(6):
+            v = vnoise(wx * freq, wz * freq, o * 17)
+            if o >= 2:
+                v = 1.0 - abs(v * 2.0 - 1.0)
+                v *= v
+            total += v * amp
+            norm += amp
+            amp *= 0.5
+            freq *= 2.07
+        return total / norm
+
+    def centre(z):
+        return (math.sin(z / wander) * wander * 0.42
+                + math.sin(z / (wander * 2.7) + 1.3) * wander * 0.22)
+
+    def road_height(wz):
+        n = 9
+        return sum(fractal(centre(wz + (i / (n - 1) - 0.5) * 22.0),
+                           wz + (i / (n - 1) - 0.5) * 22.0) * hscale
+                   for i in range(n)) / n
+
+    def height(wx, wz):
+        h = fractal(wx, wz) * hscale
+        off = abs(wx - centre(wz))
+        if off < width + shoulder:
+            t = max(0.0, min(1.0, (off - width) / shoulder))
+            t = t * t * (3.0 - 2.0 * t)
+            h += (road_height(wz) - h) * (flatten * (1.0 - t))
+        return h
+
+    grades = []
+    z = -180.0
+    while z < 180.0:
+        x0, x1 = centre(z), centre(z + 2.0)
+        run = math.hypot(x1 - x0, 2.0)
+        grades.append(abs(height(x1, z + 2.0) - height(x0, z)) / run)
+        z += 2.0
+    grades.sort()
+
+    open_grades = []
+    for i in range(400):
+        x = -180 + 360 * ((i * 37) % 400) / 400.0
+        z = -180 + 360 * ((i * 91) % 400) / 400.0
+        open_grades.append(abs(height(x + 2.0, z) - height(x, z)) / 2.0)
+    open_grades.sort()
+
+    cross = []
+    z = -180.0
+    while z < 180.0:
+        c = centre(z)
+        cross.append(abs(height(c + width * 0.8, z) - height(c - width * 0.8, z))
+                     / (width * 1.6))
+        z += 3.0
+    cross.sort()
+
+    print("  along the road : median %.3f  max %.3f grade"
+          % (grades[len(grades) // 2], grades[-1]))
+    print("  open country   : median %.3f  max %.3f grade"
+          % (open_grades[len(open_grades) // 2], open_grades[-1]))
+    print("  cross-slope    : median %.4f  max %.4f" % (cross[len(cross) // 2], cross[-1]))
+
+    dirt_mu = 1.55 * 0.62
+    check("the road is smoother than open country",
+          grades[-1] < open_grades[-1] * 0.6,
+          "road %.3f vs country %.3f" % (grades[-1], open_grades[-1]))
+    check("the road is climbable on dirt grip", grades[-1] < dirt_mu,
+          "grade %.3f vs mu %.3f" % (grades[-1], dirt_mu))
+    check("the running surface is level across its width", cross[-1] < 0.15,
+          "cross-slope %.3f" % cross[-1])
+    # A road that never turns is a runway.
+    turns = max(abs(centre(z)) for z in range(-180, 180, 5))
+    print("  the centre line wanders +-%.0f m" % turns)
+    check("the road actually curves", turns > 10.0, "%.1f m" % turns)
+
+
 def test_backface_culling():
     """Solid vegetation must not be rendered two-sided.
 
@@ -760,6 +882,7 @@ def main():
     test_effects()
     test_clouds()
     test_performance()
+    test_dirt_road()
     test_backface_culling()
     test_shader_variants()
     test_hidden_car_interior()
