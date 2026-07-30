@@ -218,9 +218,10 @@ func _process(delta: float) -> void:
 	_prev_throttle = throttle
 	_burst_left = maxf(0.0, _burst_left - delta)
 
-	var load := clampf(throttle, 0.0, 1.0)
+	# Named engine_load, not load: "load" is a built-in function.
+	var engine_load := clampf(throttle, 0.0, 1.0)
 	var revs := clampf(_vehicle.engine_rpm / maxf(_vehicle.redline_rpm, 1.0), 0.0, 1.0)
-	var rate := idle_rate + load_rate * load * (0.45 + 0.55 * revs)
+	var rate := idle_rate + load_rate * engine_load * (0.45 + 0.55 * revs)
 	if _burst_left > 0.0:
 		rate += burst_rate * (_burst_left / maxf(burst_time, 0.001))
 	# The turbo makes it noticeably dirtier.

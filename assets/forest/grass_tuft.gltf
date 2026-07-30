@@ -1,0 +1,120 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "cargame forest_to_gltf.py"
+ },
+ "scene": 0,
+ "scenes": [
+  {
+   "nodes": [
+    0
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "grass_tuft",
+   "mesh": 0
+  }
+ ],
+ "meshes": [
+  {
+   "name": "grass_tuft",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2
+     },
+     "indices": 3,
+     "material": 0
+    }
+   ]
+  }
+ ],
+ "materials": [
+  {
+   "name": "grass_tuft_mat",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     1,
+     1,
+     1,
+     1
+    ],
+    "metallicFactor": 0.0,
+    "roughnessFactor": 0.85
+   },
+   "doubleSided": true
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 163,
+   "type": "VEC3",
+   "min": [
+    -0.33645176887512207,
+    -0.005284935235977173,
+    -0.3086153268814087
+   ],
+   "max": [
+    0.29630327224731445,
+    0.5571268796920776,
+    0.26076841354370117
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5126,
+   "count": 163,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5126,
+   "count": 163,
+   "type": "VEC2"
+  },
+  {
+   "bufferView": 3,
+   "componentType": 5123,
+   "count": 369,
+   "type": "SCALAR"
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 1956,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 1956,
+   "byteLength": 1956,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 3912,
+   "byteLength": 1304,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 5216,
+   "byteLength": 738,
+   "target": 34963
+  }
+ ],
+ "buffers": [
+  {
+   "uri": "grass_tuft.bin",
+   "byteLength": 5954
+  }
+ ]
+}

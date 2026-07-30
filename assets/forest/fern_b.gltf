@@ -1,0 +1,120 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "cargame forest_to_gltf.py"
+ },
+ "scene": 0,
+ "scenes": [
+  {
+   "nodes": [
+    0
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "fern_b",
+   "mesh": 0
+  }
+ ],
+ "meshes": [
+  {
+   "name": "fern_b",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2
+     },
+     "indices": 3,
+     "material": 0
+    }
+   ]
+  }
+ ],
+ "materials": [
+  {
+   "name": "fern_b_mat",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     1,
+     1,
+     1,
+     1
+    ],
+    "metallicFactor": 0.0,
+    "roughnessFactor": 0.85
+   },
+   "doubleSided": true
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 547,
+   "type": "VEC3",
+   "min": [
+    -0.41829508543014526,
+    -0.00670170783996582,
+    -0.4980868399143219
+   ],
+   "max": [
+    0.41253426671028137,
+    1.729588270187378,
+    0.3433555066585541
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5126,
+   "count": 547,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5126,
+   "count": 547,
+   "type": "VEC2"
+  },
+  {
+   "bufferView": 3,
+   "componentType": 5123,
+   "count": 1722,
+   "type": "SCALAR"
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 6564,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 6564,
+   "byteLength": 6564,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 13128,
+   "byteLength": 4376,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 17504,
+   "byteLength": 3444,
+   "target": 34963
+  }
+ ],
+ "buffers": [
+  {
+   "uri": "fern_b.bin",
+   "byteLength": 20948
+  }
+ ]
+}

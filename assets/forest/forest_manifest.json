@@ -1,0 +1,70 @@
+{
+ "assets": [
+  {
+   "name": "tree",
+   "verts": 24118,
+   "tris": 28327,
+   "height": 6.868366734398373
+  },
+  {
+   "name": "fern_a",
+   "verts": 522,
+   "tris": 540,
+   "height": 1.726655125617981
+  },
+  {
+   "name": "fern_b",
+   "verts": 547,
+   "tris": 574,
+   "height": 1.7362899780273438
+  },
+  {
+   "name": "plant",
+   "verts": 233,
+   "tris": 185,
+   "height": 1.2709654569625854
+  },
+  {
+   "name": "grass_tuft",
+   "verts": 163,
+   "tris": 123,
+   "height": 0.5624118149280548
+  },
+  {
+   "name": "bush_a",
+   "verts": 171,
+   "tris": 158,
+   "height": 1.1829944849014282
+  },
+  {
+   "name": "bush_b",
+   "verts": 162,
+   "tris": 150,
+   "height": 1.1829944849014282
+  },
+  {
+   "name": "rock_a",
+   "verts": 2870,
+   "tris": 3504,
+   "height": 4.1824426472187035
+  },
+  {
+   "name": "rock_b",
+   "verts": 2566,
+   "tris": 3168,
+   "height": 2.648521327972412
+  },
+  {
+   "name": "rock_c",
+   "verts": 1075,
+   "tris": 890,
+   "height": 3.285244178771973
+  },
+  {
+   "name": "grass_patch",
+   "verts": 11046,
+   "tris": 8256,
+   "height": 0.9028557231649756
+  }
+ ]
+}

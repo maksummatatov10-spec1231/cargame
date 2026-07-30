@@ -1,12 +1,12 @@
-# CarGame — Stage 1
+# CarGame — Stage 2
 
 A driving game built in **Godot 4.3**. Third person, rear chase camera, a real
 BMW 1M model, and a vehicle simulation where everything that moves the car comes
 out of the physics rather than being scripted.
 
-Stage 1 delivers the car itself: the model, the two wheel animations, and the
-full suspension / tyre / drivetrain simulation, on a flat 200 x 200 m test
-ground. Forests, mountains and cities come in the later stages.
+Stage 2 adds the world: a 400 x 400 m procedural landscape with hills, a forest
+of 4 500 trees, rocks and plants, volumetric clouds, per-surface grip, tyre
+tracks and dirt thrown up by the wheels. Cities come next.
 
 ![stage 1](docs/preview.png)
 
@@ -28,6 +28,7 @@ around.
 | --- | --- |
 | `W` / `↑` | throttle |
 | `Shift` | turbo — extra boost while the throttle is open |
+| `S` (held at a standstill, after releasing it) | select reverse |
 | `S` / `↓` | brake (hold at a standstill to select reverse) |
 | `A` `D` / `←` `→` | steer |
 | `Space` | handbrake |
@@ -216,7 +217,8 @@ Those numbers are all in the right ballpark for a real BMW 1M (4.9 s claimed
 | `tools/anim_check.py` | wheel roll matches ground speed, Ackermann, speed sensitive lock, airborne coasting, pivot geometry |
 | `tools/camera_check.py` | camera never clips inside the car, view direction never degenerate, rig wiring |
 | `tools/typecheck.py` | argument types and arity of every call to a project function |
-| `tools/render_check.py` | fog/ambient/tonemap values, sun and shadows, smoke, controls |
+| `tools/render_check.py` | fog/ambient/tonemap, sun, terrain, forest, clouds, effects, controls |
+| `tools/asset_report.py` | full breakdown of the source assets (see `docs/ASSETS.md`) |
 | `tools/project_check.py` | scene resource integrity, glTF validity, input map, node paths |
 
 Run all six:
@@ -246,6 +248,58 @@ literals, constructors, numeric built-ins and locally declared variables, and
 catches all three of those call sites.
 
 ---
+
+## The world
+
+### Terrain
+
+A 400 x 400 m heightfield built from layered value noise, with ridged octaves
+so the hills have crests rather than looking like rolling dough. The middle
+26 m is flattened for the spawn, easing out over another 34 m.
+
+Collision is a `HeightMapShape3D` reading **the same array** the visible mesh
+was built from, so the wheels hit exactly what is drawn. A trimesh would also
+work but is much slower to query, and the four wheel raycasts run 120 times a
+second.
+
+Every point is classified as grass, dirt or rock from its slope and height,
+and that drives the physics:
+
+| Surface | Grip | Rolling drag | 0-100 | Braking 100-0 |
+| --- | --- | --- | --- | --- |
+| tarmac | 1.00 | 1.0 | 4.92 s | 34.8 m |
+| rock | 0.94 | 1.2 | 4.92 s | 36.9 m |
+| grass | 0.72 | 2.6 | 5.59 s | 46.5 m |
+| dirt | 0.62 | 3.4 | 6.48 s | 52.9 m |
+
+### Forest
+
+4 540 trees, rocks and plants from the uploaded assets. **None of the source
+files contain any animation** — verified in `docs/ASSETS.md` — so the wind is a
+vertex shader that displaces geometry by its height above an anchor, leaving
+trunks planted while canopies sway.
+
+Each species is one `MultiMeshInstance3D`, so the whole forest is 11 draw
+calls. Trees and rocks get capsule and sphere collision within 170 m of the
+spawn; grass does not, because a `StaticBody3D` per tuft would cost far more
+than it is worth.
+
+### Clouds
+
+A raymarched sky shader: 28 steps through a flattened noise field, with 4 more
+steps towards the sun per sample for self-shadowing. That is what gives the
+clouds bright tops, dark bases and a glow when you look towards the sun. The
+sky radiance is set to realtime so the scene lighting follows the sky.
+
+### Tyre marks and dirt
+
+Marks are a triangle ribbon in an `ImmediateMesh`, not decals — Godot's decals
+are projected volumes and stacking hundreds of them collapses the frame rate.
+Two vertices per wheel per segment, in a ring buffer that fades over 14 s.
+
+Dirt is thrown as small tetrahedra with real gravity, so it arcs and lands
+instead of floating, with a separate dust haze behind it. Colour follows the
+surface, and tarmac throws nothing.
 
 ## The model
 

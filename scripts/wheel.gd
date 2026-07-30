@@ -90,7 +90,7 @@ extends RayCast3D
 ## a jolt every time you pull away. Capping the time constant keeps the tyre
 ## responsive at low speed without giving up the transient behaviour at speed.
 @export var max_relaxation_time := 0.08
-## Rolling resistance coefficient.
+## Rolling resistance coefficient on tarmac. Soft surfaces scale this up.
 @export var rolling_resistance := 0.014
 ## Radial stiffness of the tyre carcass in N/m. The sidewall is a spring in
 ## series with the coil-over and absorbs a large part of any sharp impact; a
@@ -123,6 +123,16 @@ var brake_torque := 0.0
 ## Mass of the car resting on this corner, kg. Set by the vehicle at startup and
 ## used to size the per-step force limit; see [method update_tyre].
 var supported_mass := 375.0
+
+## What the tyre is currently standing on, as a [Terrain].Surface value.
+## Set every tick by the vehicle from the terrain query.
+var surface_type := 0
+## Grip multiplier for the current surface.
+var surface_grip := 1.0
+## Rolling resistance multiplier for the current surface.
+var surface_drag := 1.0
+## How much loose material this surface throws up, 0 = none.
+var surface_looseness := 0.0
 
 ## Inertia of the engine and gearbox reflected down to this wheel, kg m^2.
 ## Set by the vehicle every tick; it changes with the gear ratio.
@@ -336,6 +346,8 @@ func update_tyre(delta: float, contact_velocity: Vector3) -> void:
 	mu = clampf(mu, 0.35 * friction_coefficient, 1.35 * friction_coefficient)
 	# Camber thrust: a leaning tyre loses a little of its footprint.
 	mu *= cos(deg_to_rad(camber_deg)) * 0.02 + 0.98
+	# Grass and dirt simply do not grip like tarmac.
+	mu *= surface_grip
 
 	var total := mu * spring_force * _magic_formula(combined)
 
@@ -364,7 +376,7 @@ func update_tyre(delta: float, contact_velocity: Vector3) -> void:
 
 	# Rolling resistance always opposes the direction of travel.
 	if absf(v_long) > 0.05:
-		var crr := rolling_resistance * (1.0 + 0.0006 * v_long * v_long)
+		var crr := rolling_resistance * (1.0 + 0.0006 * v_long * v_long) * surface_drag
 		fx -= signf(v_long) * crr * spring_force
 
 	tyre_force = Vector2(fx, fy)
@@ -396,6 +408,19 @@ func update_spin(delta: float) -> void:
 		spin -= spin * clampf(1.2 * delta, 0.0, 1.0)
 
 	spin = clampf(spin, -400.0, 400.0)
+
+
+## Peak longitudinal force this tyre can put down right now, in newtons.
+##
+## Used by the traction control to size engine torque before the wheel has a
+## chance to spin, rather than reacting once grip is already gone.
+func grip_limit_force() -> float:
+	if not grounded or spring_force <= 0.0:
+		return 0.0
+	var load_ratio := spring_force / maxf(nominal_load, 1.0)
+	var mu := friction_coefficient * (1.0 - load_sensitivity * (load_ratio - 1.0))
+	mu = clampf(mu, 0.35 * friction_coefficient, 1.35 * friction_coefficient)
+	return mu * spring_force * surface_grip
 
 
 ## Applies the contact-patch forces to the chassis.

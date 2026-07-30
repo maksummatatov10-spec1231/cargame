@@ -21,6 +21,7 @@ predicted contribution, not a guess.
 Run:  python3 tools/render_check.py
 """
 
+import json
 import math
 import os
 import re
@@ -163,13 +164,104 @@ def test_smoke():
 
 
 def test_ground():
-    print("\n== ground material ==")
-    src = open(os.path.join(ROOT, "scripts", "world.gd")).read()
-    check("ground has an albedo texture", "albedo_texture" in src)
-    check("ground has a normal map so the sun catches it", "normal_texture" in src)
-    check("ground has a roughness map", "roughness_texture" in src)
-    check("ground contributes to global illumination", "GI_MODE_STATIC" in src)
-    check("textures are anisotropically filtered", "ANISOTROPIC" in src)
+    print("\n== terrain ==")
+    src = open(os.path.join(ROOT, "scripts", "terrain.gd")).read()
+    check("terrain is a heightfield", "HeightMapShape3D" in src)
+    check("collision samples the same array as the mesh", "map_data = heights" in src)
+    check("collision cell size is scaled to match the mesh",
+          "Vector3(_cell, 1.0, _cell)" in src)
+    check("terrain has a shaded material", "shader_type spatial" in src)
+    check("ground blends grass, dirt and rock", "rock_amount" in src
+          and "dirt_amount" in src and "grass_amount" in src)
+    check("ground has procedural normal detail", "NORMAL_MAP" in src)
+    check("terrain contributes to global illumination", "GI_MODE_STATIC" in src)
+    check("surface types are exposed to the physics", "func sample_surface" in src)
+
+    veh = open(os.path.join(ROOT, "scripts", "vehicle.gd")).read()
+    check("wheels are told what surface they are on", "_update_surfaces" in veh)
+    wheel = open(os.path.join(ROOT, "scripts", "wheel.gd")).read()
+    check("grip actually changes with the surface", "surface_grip" in wheel)
+    check("rolling resistance changes with the surface", "surface_drag" in wheel)
+
+
+def test_forest():
+    print("\n== forest ==")
+    path = os.path.join(ROOT, "scripts", "forest.gd")
+    check("forest script exists", os.path.exists(path))
+    if not os.path.exists(path):
+        return
+    src = open(path).read()
+    check("vegetation is instanced, not one node each", "MultiMesh" in src)
+    check("plants sway in the wind (they have no rig, so it is a shader)",
+          "shader_type spatial" in src and "TIME" in src)
+    check("trunks stay still while canopies move", "anchor_height" in src)
+    check("foliage is lit from behind", "BACKLIGHT" in src)
+    check("trees and rocks have collision", "CapsuleShape3D" in src
+          and "SphereShape3D" in src)
+    check("placement follows the terrain", "sample_height" in src
+          and "sample_normal" in src)
+    check("a clearing is kept for the spawn", "clearing_radius" in src)
+
+    manifest = os.path.join(ROOT, "assets", "forest", "forest_manifest.json")
+    check("converted forest assets are present", os.path.exists(manifest))
+    if os.path.exists(manifest):
+        data = json.load(open(manifest))
+        names = {a["name"] for a in data["assets"]}
+        print("  %d assets: %s" % (len(names), ", ".join(sorted(names))))
+        check("the tree survived conversion", "tree" in names)
+        tree = next((a for a in data["assets"] if a["name"] == "tree"), None)
+        if tree:
+            check("tree is a believable height", 4.0 < tree["height"] < 12.0,
+                  "%.2f m" % tree["height"])
+
+
+def test_effects():
+    print("\n== tyre marks and dirt ==")
+    marks = os.path.join(ROOT, "scripts", "tyre_marks.gd")
+    check("tyre mark script exists", os.path.exists(marks))
+    if os.path.exists(marks):
+        src = open(marks).read()
+        check("marks are a mesh ribbon, not stacked decals",
+              "ImmediateMesh" in src)
+        check("marks stay on the ground as the car drives on",
+              "top_level = true" in src)
+        check("marks fade out rather than accumulating forever",
+              "fade_time" in src and "pop_front" in src)
+        check("marks appear on soft ground even without sliding",
+              "surface_looseness" in src)
+
+    dirt = os.path.join(ROOT, "scripts", "ground_particles.gd")
+    check("ground particle script exists", os.path.exists(dirt))
+    if os.path.exists(dirt):
+        src = open(dirt).read()
+        check("clods are thrown with gravity, so they arc",
+              "gravity = Vector3(0.0, -9.81, 0.0)" in src)
+        check("dust is separate from the clods", "_make_dust" in src)
+        check("particle colour follows the surface", "surface_colours" in src)
+        check("tarmac throws nothing", "surface_looseness <= 0.01" in src)
+
+    scene = open(os.path.join(ROOT, "scenes", "car.tscn")).read()
+    check("effects are wired into the car scene",
+          "TyreMarks" in scene and "GroundParticles" in scene)
+
+
+def test_clouds():
+    print("\n== sky ==")
+    path = os.path.join(ROOT, "scripts", "sky_clouds.gd")
+    check("cloud shader exists", os.path.exists(path))
+    if not os.path.exists(path):
+        return
+    src = open(path).read()
+    check("it is a real sky shader", "shader_type sky" in src)
+    check("clouds are raymarched, not a scrolling texture",
+          "MARCH_STEPS" in src and "transmittance" in src)
+    check("clouds self-shadow, giving bright tops and dark bases",
+          "LIGHT_STEPS" in src)
+    check("clouds drift over time", "wind_speed" in src and "TIME" in src)
+    check("sky radiance updates so lighting matches the sky",
+          "PROCESS_MODE_REALTIME" in src)
+    scene = open(os.path.join(ROOT, "scenes", "main.tscn")).read()
+    check("clouds are in the scene", "SkyClouds" in scene)
 
 
 def test_input():
@@ -195,6 +287,9 @@ def main():
     test_environment()
     test_sun()
     test_ground()
+    test_forest()
+    test_effects()
+    test_clouds()
     test_smoke()
     test_input()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES

@@ -45,12 +45,14 @@ def build(asset_dir, out_path):
     res = []           # sub resources
     lines = []
     ext_id = "1_model"
-    lines.append('[gd_scene load_steps=%d format=3]\n' % (len(hulls) + 6))
+    lines.append('[gd_scene load_steps=%d format=3]\n' % (len(hulls) + 8))
     lines.append('[ext_resource type="PackedScene" path="res://assets/car/bmw_1m.gltf" id="%s"]' % ext_id)
     lines.append('[ext_resource type="Script" path="res://scripts/vehicle.gd" id="2_vehicle"]')
     lines.append('[ext_resource type="Script" path="res://scripts/wheel.gd" id="3_wheel"]')
     lines.append('[ext_resource type="Script" path="res://scripts/car_model.gd" id="4_model"]')
-    lines.append('[ext_resource type="Script" path="res://scripts/exhaust_smoke.gd" id="5_smoke"]\n')
+    lines.append('[ext_resource type="Script" path="res://scripts/exhaust_smoke.gd" id="5_smoke"]')
+    lines.append('[ext_resource type="Script" path="res://scripts/tyre_marks.gd" id="6_marks"]')
+    lines.append('[ext_resource type="Script" path="res://scripts/ground_particles.gd" id="7_dirt"]\n')
 
     for i, pts in enumerate(hulls):
         flat = ", ".join("%.4f" % c for p in pts for c in p)
@@ -108,6 +110,12 @@ def build(asset_dir, out_path):
 
     lines.append('[node name="ExhaustSmoke" type="Node3D" parent="."]')
     lines.append('script = ExtResource("5_smoke")\n')
+
+    lines.append('[node name="TyreMarks" type="Node3D" parent="."]')
+    lines.append('script = ExtResource("6_marks")\n')
+
+    lines.append('[node name="GroundParticles" type="Node3D" parent="."]')
+    lines.append('script = ExtResource("7_dirt")\n')
 
     lines.append('[node name="CameraTarget" type="Marker3D" parent="."]')
     lines.append("transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.95, 0)\n")

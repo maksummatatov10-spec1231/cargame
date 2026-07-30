@@ -57,6 +57,8 @@ signal gear_changed(gear: int)
 @export var downshift_fraction := 0.42
 ## Seconds the clutch is open during an automatic shift.
 @export var shift_time := 0.22
+## How long the brake must be held, at a standstill, to select reverse.
+@export var reverse_select_delay := 0.45
 ## Road speed in m/s at which the clutch is fully engaged. Below this it slips,
 ## so the engine can idle without dragging the car along; without it a car left
 ## in gear would creep forever on idle torque. Kept low so pulling away is
@@ -81,6 +83,30 @@ signal gear_changed(gear: int)
 @export var steer_return_rate := 5.0
 ## Ackermann factor, 0 = parallel steering, 1 = perfect Ackermann.
 @export_range(0.0, 1.0) var ackermann := 0.72
+
+@export_group("Surfaces")
+## Grip, rolling drag and looseness for each terrain surface.
+## Index order matches Terrain.Surface: grass, dirt, rock.
+@export var surface_grip : Array[float] = [0.72, 0.62, 0.94]
+@export var surface_drag : Array[float] = [2.6, 3.4, 1.2]
+@export var surface_looseness : Array[float] = [0.55, 1.0, 0.0]
+
+@export_group("Assists")
+## Traction control: cuts engine torque when the driven wheels spin up.
+## This is what stops a 450 Nm rear-drive car from lighting up its tyres and
+## spinning at the slightest provocation. 0 disables it.
+@export_range(0.0, 1.0) var traction_control := 0.85
+## Slip ratio the traction control aims to hold. Peak grip is near 0.115, so
+## sitting just above it keeps the acceleration without the snap.
+@export var traction_target_slip := 0.16
+## How far past the tyres' grip the predictive limiter is allowed to go.
+## 1.0 is exactly at the limit; a little over lets it use peak slip.
+@export var traction_headroom := 1.15
+## Stability control: trims torque and adds a corrective yaw moment when the
+## car rotates faster than the steering asks for.
+@export_range(0.0, 1.0) var stability_control := 0.6
+## Yaw error in rad/s that the stability control tolerates before it acts.
+@export var stability_deadband := 0.18
 
 @export_group("Aerodynamics")
 ## Drag area, Cd * A in m^2.
@@ -111,10 +137,16 @@ var _front : Array[RayWheel] = []
 var _rear : Array[RayWheel] = []
 var _steer_position := 0.0
 var _shift_timer := 0.0
+var _reverse_hold := 0.0
+var _tc_cut := 0.0
+var _reverse_armed := false
+var _brake_was_down := false
 var _engine_speed := 0.0            ## rad/s
 var _spawn_transform := Transform3D.IDENTITY
 var _wheelbase := 2.63
 var _track := 1.49
+
+var _terrain : Terrain
 
 @onready var _wheel_root : Node3D = $Wheels
 @onready var _model : CarModel = $Model
@@ -148,6 +180,12 @@ func _ready() -> void:
 	_engine_speed = idle_rpm * TAU / 60.0
 	_spawn_transform = global_transform
 	_apply_inertia_tensor()
+
+	# The terrain is a sibling in the main scene; found once rather than
+	# searched for every tick.
+	var found := get_tree().get_nodes_in_group("terrain")
+	if not found.is_empty():
+		_terrain = found[0] as Terrain
 
 	# Each corner needs to know the share of the car it carries, so it can size
 	# its own force limits correctly.
@@ -227,6 +265,10 @@ func reset_to_spawn() -> void:
 	_shift_timer = 0.0
 	_steer_position = 0.0
 	boost = 0.0
+	_reverse_hold = 0.0
+	_reverse_armed = false
+	_brake_was_down = false
+	_tc_cut = 0.0
 	_engine_speed = idle_rpm * TAU / 60.0
 
 
@@ -243,9 +285,12 @@ func _physics_process(delta: float) -> void:
 
 	_update_steering()
 	_update_suspension(delta)
+	_update_surfaces()
 	_update_brakes(forward_speed)
 	_update_drivetrain(delta, forward_speed)
 	_update_tyres(delta)
+
+	_apply_stability_control(forward_speed)
 
 	for w in _wheels:
 		w.update_spin(delta)
@@ -305,6 +350,21 @@ func _opposite_index(i: int) -> int:
 	return i
 
 
+## Tells every wheel what it is driving on, so grip and the particle effects
+## follow the ground rather than being the same everywhere.
+func _update_surfaces() -> void:
+	if _terrain == null:
+		return
+	for w in _wheels:
+		if not w.grounded:
+			continue
+		var s := _terrain.sample_surface(w.contact_point.x, w.contact_point.z)
+		w.surface_type = s
+		w.surface_grip = surface_grip[s] if s < surface_grip.size() else 1.0
+		w.surface_drag = surface_drag[s] if s < surface_drag.size() else 1.0
+		w.surface_looseness = surface_looseness[s] if s < surface_looseness.size() else 0.0
+
+
 func _update_tyres(delta: float) -> void:
 	# Velocity of the chassis at each contact patch: the body's linear velocity
 	# plus the tangential velocity from its rotation. This is what makes weight
@@ -359,11 +419,7 @@ func _update_drivetrain(delta: float, forward_speed: float) -> void:
 		var engaged := clampf(absf(forward_speed) / maxf(clutch_engage_speed, 0.01), 0.0, 1.0)
 		clutch = clampf(maxf(engaged, throttle * 1.6), 0.0, 1.0)
 
-	# Reverse is selected by holding brake while basically stopped.
-	if gear > 0 and brake_input > 0.5 and forward_speed < 0.6 and throttle < 0.1:
-		gear = -1
-	elif gear < 0 and throttle > 0.5 and forward_speed > -0.6 and brake_input < 0.1:
-		gear = 1
+	_update_gear_selection(forward_speed, delta)
 
 	var ratio := current_ratio()
 
@@ -393,6 +449,7 @@ func _update_drivetrain(delta: float, forward_speed: float) -> void:
 
 	var crank_torque := engine_torque_at(engine_rpm) * throttle
 	crank_torque *= 1.0 + (boost_multiplier - 1.0) * boost
+	crank_torque *= _traction_control_factor(ratio)
 	# Engine braking only exists above idle; at idle the engine is producing just
 	# enough torque to keep itself turning, not to drag the car backwards.
 	crank_torque -= engine_braking * maxf(_engine_speed - idle_speed, 0.0) \
@@ -400,6 +457,54 @@ func _update_drivetrain(delta: float, forward_speed: float) -> void:
 	var axle_torque := crank_torque * ratio * drivetrain_efficiency * clutch
 
 	_distribute_drive(axle_torque)
+
+
+## Chooses between drive and reverse.
+##
+## The old rule was "holding the brake below 0.6 m/s selects reverse", which is
+## exactly what a player does when braking to a standstill: the car silently
+## dropped into reverse at ~2 km/h, and from then on W was the brake and S was
+## the throttle, so it would not go forwards again. That is the "drove for
+## 50 seconds, stopped, now it will not move" bug.
+##
+## Reverse now needs a *fresh* press of the brake made while already stopped.
+## Arming on release alone was not enough: braking from speed to a halt and
+## simply keeping the pedal down still slid into reverse, because the pedal had
+## been released at some point earlier in the lap. So the press that stopped
+## the car is remembered and explicitly disqualified.
+func _update_gear_selection(forward_speed: float, delta: float) -> void:
+	var stationary := absf(forward_speed) < 0.25 and speed_kmh < 1.5
+	var braking := brake_input > 0.5
+
+	# Track individual presses rather than the pedal's current state.
+	var press_started := braking and not _brake_was_down
+	if press_started:
+		# A press only counts for reverse if the car was already stopped when
+		# it began. The press that brings the car to a halt never qualifies.
+		_reverse_armed = stationary
+		_reverse_hold = 0.0
+	elif not braking:
+		_reverse_armed = false
+		_reverse_hold = 0.0
+	_brake_was_down = braking
+
+	if gear > 0:
+		if stationary and _reverse_armed and braking and throttle < 0.05:
+			_reverse_hold += delta
+			if _reverse_hold >= reverse_select_delay:
+				gear = -1
+				_reverse_hold = 0.0
+				_reverse_armed = false
+				gear_changed.emit(gear)
+		else:
+			_reverse_hold = 0.0
+	elif gear < 0:
+		# Coming back out of reverse is immediate; the car must not get stuck.
+		if stationary and throttle > 0.5 and brake_input < 0.05:
+			gear = 1
+			_reverse_hold = 0.0
+			_reverse_armed = false
+			gear_changed.emit(gear)
 
 
 func _rpm() -> float:
@@ -422,6 +527,112 @@ func _auto_shift() -> void:
 ## Splits the axle torque between the two driven wheels. An open differential
 ## sends equal torque to both, which means a lifted wheel spins up and the car
 ## goes nowhere; the LSD term biases torque back towards the slower wheel.
+## Limits engine torque to what the driven tyres can actually put down.
+##
+## Reacting to wheelspin after it happens is too late: by the time the slip
+## ratio has climbed, the friction ellipse has already eaten the rear tyres'
+## cornering force and the car is sideways. So this works out, up front, how
+## much torque the contact patches can take, and never asks for more.
+##
+##     F_max  = mu * Fz            per driven wheel
+##     T_max  = F_max * radius     torque that force can absorb
+##     crank  = T_max / ratio      what the engine may send
+##
+## A small headroom factor lets the tyres run slightly past peak slip, which is
+## where they make the most grip, without tipping into a slide. On top of that
+## a reactive term trims the torque if slip still creeps up (bumps, kerbs).
+func _traction_control_factor(ratio: float) -> float:
+	if traction_control <= 0.0 or _rear.is_empty():
+		return 1.0
+
+	var delta := get_physics_process_delta_time()
+
+	# --- reactive part: catch slip that got through anyway --------------- #
+	var worst := 0.0
+	for w in _rear:
+		if w.grounded:
+			worst = maxf(worst, w.slip_ratio)
+	if worst <= traction_target_slip:
+		_tc_cut = maxf(0.0, _tc_cut - 4.0 * delta)
+	else:
+		var excess := (worst - traction_target_slip) / 0.25
+		_tc_cut = clampf(maxf(_tc_cut, excess), 0.0, 1.0)
+	var factor := 1.0 - _tc_cut * traction_control
+
+	# --- predictive part: never exceed the available grip ---------------- #
+	if absf(ratio) > 0.01:
+		# An open-ish differential can only push as hard as its *weaker* wheel,
+		# so the capacity is set by the least loaded tyre, not the total. In a
+		# corner the inside rear unloads to a third of its static weight, and
+		# sizing torque off the sum is what let the car light up its tyres and
+		# swap ends.
+		var weakest := INF
+		var driven := 0
+		for w in _rear:
+			if w.grounded:
+				weakest = minf(weakest, w.grip_limit_force())
+				driven += 1
+		if driven > 0 and is_finite(weakest):
+			# The locking effect lets the loaded wheel take a share of the
+			# slack; a fully open diff gets nothing extra.
+			var capacity := weakest * driven * lerpf(1.0, 1.35, differential_lock)
+
+			# Cornering uses up part of the friction circle, so less of it is
+			# left for driving out. This is the term that actually tames
+			# power-on oversteer instead of waiting for the slide to start.
+			var lateral_use := 0.0
+			for w in _rear:
+				lateral_use = maxf(lateral_use,
+					absf(w.slip_angle) / deg_to_rad(maxf(w.peak_slip_angle_deg, 1.0)))
+			var remaining := sqrt(maxf(0.0, 1.0 - minf(lateral_use, 1.0) ** 2))
+			capacity *= lerpf(1.0, maxf(remaining, 0.25), traction_control)
+
+			var allowed := capacity * traction_headroom * _rear[0].tyre_radius \
+				/ (absf(ratio) * drivetrain_efficiency)
+			var demand := engine_torque_at(engine_rpm) \
+				* (1.0 + (boost_multiplier - 1.0) * boost)
+			if demand > allowed:
+				factor = minf(factor, lerpf(1.0, allowed / demand, traction_control))
+
+	return clampf(factor, 0.0, 1.0)
+
+
+## Damps the yaw rate when the car rotates faster than the driver asked for.
+##
+## Modelled as a brake on the outer front wheel plus a small direct yaw moment,
+## which is how a real ESC behaves. It only fights genuine oversteer: the
+## deadband means normal cornering is untouched.
+func _apply_stability_control(forward_speed: float) -> void:
+	if stability_control <= 0.0 or absf(forward_speed) < 3.0:
+		return
+
+	# What the steering geometry says the yaw rate should be.
+	var steer_angle := deg_to_rad(max_steer_deg) * steer_input \
+		* lerpf(1.0, high_speed_steer_scale,
+			clampf(speed_kmh / steer_speed_falloff, 0.0, 1.0))
+	var target_yaw := forward_speed * tan(steer_angle) / maxf(_wheelbase, 0.1)
+	# Never ask for more than the tyres could deliver anyway.
+	var grip_limit := 1.4 * 9.81 / maxf(absf(forward_speed), 1.0)
+	target_yaw = clampf(target_yaw, -grip_limit, grip_limit)
+
+	var actual_yaw := angular_velocity.dot(global_basis.y)
+	var error := actual_yaw - target_yaw
+	if absf(error) < stability_deadband:
+		return
+
+	var correction := (absf(error) - stability_deadband) * signf(error)
+	# Brake the wheel on the outside of the slide to straighten the car.
+	var brake := clampf(absf(correction) * 2.2, 0.0, 1.0) * stability_control
+	for w in _front:
+		var outer := signf(w.position.x) != signf(correction)
+		if outer:
+			w.brake_torque = maxf(w.brake_torque, front_brake_torque * brake * 0.55)
+
+	# A gentle direct moment as well, so it responds immediately.
+	var moment := -correction * mass * 0.55 * stability_control
+	apply_torque(global_basis.y * moment)
+
+
 func _distribute_drive(axle_torque: float) -> void:
 	for w in _wheels:
 		w.drive_torque = 0.0

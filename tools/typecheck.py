@@ -131,9 +131,16 @@ def compatible(actual, declared):
 
 
 def collect_signatures(sources):
-    """{function name: [(param name, type, has_default), ...]}"""
+    """{path: {function name: [(param name, type, has_default), ...]}}
+
+    Signatures are kept per file. GDScript methods live on their class, so two
+    scripts can each define a private helper with the same name and different
+    parameters - which they do. Treating the names as global produced a false
+    "wrong number of arguments" report.
+    """
     sigs = {}
     for path, text in sources.items():
+        sigs[path] = {}
         # a func header may wrap over several lines before the closing paren
         for m in re.finditer(r"^func\s+(\w+)\s*\((.*?)\)\s*(?:->\s*[\w\[\], ]+)?:",
                              text, re.S | re.M):
@@ -149,7 +156,7 @@ def collect_signatures(sources):
                     params.append((pname.strip(), ptype.strip(), has_default))
                 else:
                     params.append((decl, None, has_default))
-            sigs[name] = params
+            sigs[path][name] = params
     return sigs
 
 
@@ -179,8 +186,9 @@ def collect_locals(text):
     return out
 
 
-def check_calls(sources, sigs):
+def check_calls(sources, all_sigs):
     for path, text in sources.items():
+        sigs = all_sigs.get(path, {})
         # strip comments and strings so they cannot look like calls
         clean_lines = []
         for line in text.splitlines():
@@ -236,8 +244,9 @@ def main():
             sources[os.path.join(scripts, name)] = open(os.path.join(scripts, name)).read()
 
     sigs = collect_signatures(sources)
+    total = sum(len(v) for v in sigs.values())
     print("GDScript call type check")
-    print("  %d scripts, %d typed functions" % (len(sources), len(sigs)))
+    print("  %d scripts, %d typed functions" % (len(sources), total))
     check_calls(sources, sigs)
 
     if PROBLEMS:

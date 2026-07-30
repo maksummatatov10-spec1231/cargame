@@ -119,6 +119,8 @@ class Wheel:
         self.max_relaxation_time = 0.08
         self.rolling_resistance = 0.014
         self.camber = math.radians(cfg["camber"])
+        self.surface_grip = 1.0
+        self.surface_drag = 1.0
         self.supported_mass = cfg.get("supported_mass", 375.0)
 
         self.spin = 0.0
@@ -230,6 +232,7 @@ class Wheel:
         mu = self.mu * (1.0 - self.load_sensitivity * (load_ratio - 1.0))
         mu = max(0.35 * self.mu, min(1.35 * self.mu, mu))
         mu *= math.cos(self.camber) * 0.02 + 0.98
+        mu *= self.surface_grip
 
         total = mu * self.spring_force * magic_formula(combined)
         fx = total * nx / combined
@@ -245,7 +248,8 @@ class Wheel:
         fx = max(-limit, min(limit, fx))
 
         if abs(v_long) > 0.05:
-            crr = self.rolling_resistance * (1.0 + 0.0006 * v_long * v_long)
+            crr = self.rolling_resistance * (1.0 + 0.0006 * v_long * v_long) \
+                * self.surface_drag
             fx -= math.copysign(crr * self.spring_force, v_long)
 
         self.force = (fx, fy)
@@ -391,6 +395,12 @@ class Car:
         self.brake = 0.0
         self.steer_input = 0.0
         self.shift_timer = 0.0
+        self.tc_cut = 0.0
+        self.traction_control = 0.85
+        self.traction_target_slip = 0.16
+        self.stability_control = 0.6
+        self.stability_deadband = 0.18
+        self.traction_headroom = 1.15
 
     # position of the visual origin (the car's own origin, not the CoM)
     def origin_height(self):
@@ -462,7 +472,40 @@ class Car:
                 self.gear -= 1
                 self.shift_timer = 0.22 * 0.6
 
-        crank = engine_torque(rpm) * self.throttle
+        # traction control: reactive + predictive
+        worst = max([w.slip_ratio for w in rear if w.grounded] or [0.0])
+        if worst <= self.traction_target_slip:
+            self.tc_cut = max(0.0, self.tc_cut - 4.0 * DT)
+        else:
+            self.tc_cut = min(1.0, max(self.tc_cut,
+                                       (worst - self.traction_target_slip) / 0.25))
+        tc = 1.0 - self.tc_cut * self.traction_control
+
+        if abs(ratio) > 0.01:
+            weakest = None
+            driven = 0
+            lateral_use = 0.0
+            for w in rear:
+                if w.grounded:
+                    lr = w.spring_force / max(w.nominal_load, 1.0)
+                    mu = w.mu * (1.0 - w.load_sensitivity * (lr - 1.0))
+                    mu = max(0.35 * w.mu, min(1.35 * w.mu, mu))
+                    f = mu * w.spring_force * w.surface_grip
+                    weakest = f if weakest is None else min(weakest, f)
+                    driven += 1
+                    lateral_use = max(lateral_use, abs(w.slip_angle) / w.peak_sa)
+            if driven and weakest:
+                capacity = weakest * driven * (1.0 + 0.35 * 0.45)
+                remaining = math.sqrt(max(0.0, 1.0 - min(lateral_use, 1.0) ** 2))
+                capacity *= 1.0 + (max(remaining, 0.25) - 1.0) * self.traction_control
+                allowed = capacity * self.traction_headroom * rear[0].radius \
+                    / (abs(ratio) * 0.90)
+                demand = engine_torque(rpm)
+                if demand > allowed:
+                    tc = min(tc, 1.0 + (allowed / demand - 1.0) * self.traction_control)
+        tc = max(0.0, min(1.0, tc))
+
+        crank = engine_torque(rpm) * self.throttle * tc
         crank -= 0.055 * max(0.0, self.engine_speed - idle_speed) \
             * (1.0 - self.throttle * 0.85)
         axle = crank * self.ratio() * 0.90 * clutch
@@ -485,6 +528,26 @@ class Car:
             hold = 900.0 * (1.0 - abs(fwd) / 0.4)
             for w in self.wheels:
                 w.brake_torque = max(w.brake_torque, hold)
+
+        # --- stability control ---
+        fwd_speed = self.forward_speed()
+        if self.stability_control > 0.0 and abs(fwd_speed) >= 3.0:
+            sa = math.radians(33.0) * self.steer_input * scale
+            target = fwd_speed * math.tan(sa) / wheelbase
+            lim = 1.4 * G / max(abs(fwd_speed), 1.0)
+            target = max(-lim, min(lim, target))
+            actual = v_dot(b.omega, (b.basis[0][1], b.basis[1][1], b.basis[2][1]))
+            err = actual - target
+            if abs(err) >= self.stability_deadband:
+                corr = (abs(err) - self.stability_deadband) * (1 if err > 0 else -1)
+                br = min(1.0, abs(corr) * 2.2) * self.stability_control
+                for w in self.wheels:
+                    if w.is_steering and (w.mount[0] > 0) != (corr > 0):
+                        w.brake_torque = max(w.brake_torque, 2400.0 * br * 0.55)
+                moment = -corr * MASS * 0.55 * self.stability_control
+                axis = (b.basis[0][1], b.basis[1][1], b.basis[2][1])
+                tb = m_mul_v(m_t(b.basis), v_mul(axis, moment))
+                b.torque = v_add(b.torque, v_mul(axis, moment))
 
         # --- tyres ---
         for w in self.wheels:
@@ -707,6 +770,140 @@ def test_smoothness():
           "%.2f m/s" % speeds[-1])
 
 
+def test_reverse_latch():
+    """The 'drove for 50 s, stopped, will not go forward' bug.
+
+    Reverse used to engage whenever the brake was held below 0.6 m/s, which is
+    exactly what happens when a player brakes to a standstill. The car dropped
+    into reverse at walking pace and from then on W was the brake, so it would
+    not pull away again.
+    """
+    print("\n== reverse must never engage by itself ==")
+
+    class Latching(Car):
+        """Mirrors the gear selection logic in vehicle.gd."""
+
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.reverse_hold = 0.0
+            self.reverse_armed = False
+            self.brake_was_down = False
+
+        def step(self):
+            fwd = self.forward_speed()
+            stationary = abs(fwd) < 0.25 and self.speed_kmh() < 1.5
+            braking = self.brake > 0.5
+            press_started = braking and not self.brake_was_down
+            if press_started:
+                self.reverse_armed = stationary
+                self.reverse_hold = 0.0
+            elif not braking:
+                self.reverse_armed = False
+                self.reverse_hold = 0.0
+            self.brake_was_down = braking
+
+            if self.gear > 0:
+                if (stationary and self.reverse_armed
+                        and braking and self.throttle < 0.05):
+                    self.reverse_hold += DT
+                    if self.reverse_hold >= 0.45:
+                        self.gear = -1
+                        self.reverse_hold = 0.0
+                        self.reverse_armed = False
+                else:
+                    self.reverse_hold = 0.0
+            elif self.gear < 0:
+                if stationary and self.throttle > 0.5 and self.brake < 0.05:
+                    self.gear = 1
+                    self.reverse_armed = False
+            super().step()
+
+    car = Latching(REST_HEIGHT)
+    for _ in range(360):
+        car.step()
+
+    # drive hard for 50 s, exactly as reported
+    car.throttle = 1.0
+    for _ in range(120 * 50):
+        car.step()
+    top = car.speed_kmh()
+
+    # brake all the way to a stop, holding the key down
+    car.throttle = 0.0
+    car.brake = 1.0
+    for _ in range(120 * 15):
+        car.step()
+    gear_after_braking = car.gear
+    print("  reached %.0f km/h, braked to %.2f km/h, gear is %d"
+          % (top, car.speed_kmh(), gear_after_braking))
+    check("braking to a stop does not select reverse", gear_after_braking > 0,
+          "gear %d" % gear_after_braking)
+
+    # release and drive off again
+    car.brake = 0.0
+    for _ in range(60):
+        car.step()
+    car.throttle = 1.0
+    for _ in range(120 * 4):
+        car.step()
+    print("  after releasing the brake and accelerating: %.1f km/h in gear %d"
+          % (car.speed_kmh(), car.gear))
+    check("the car drives forward again", car.speed_kmh() > 25.0,
+          "%.1f km/h" % car.speed_kmh())
+
+    # and reverse must still be available deliberately
+    car.throttle = 0.0
+    car.brake = 1.0
+    for _ in range(120 * 12):
+        car.step()
+    car.brake = 0.0
+    for _ in range(30):
+        car.step()
+    car.brake = 1.0
+    for _ in range(120):
+        car.step()
+    print("  deliberate reverse request -> gear %d" % car.gear)
+    check("reverse is still available when asked for", car.gear < 0,
+          "gear %d" % car.gear)
+
+
+def test_surfaces():
+    print("\n== surfaces must feel different ==")
+    results = {}
+    for name, grip, drag in (("tarmac", 1.0, 1.0), ("grass", 0.72, 2.6),
+                             ("dirt", 0.62, 3.4)):
+        car = Car(REST_HEIGHT)
+        for w in car.wheels:
+            w.surface_grip = grip
+            w.surface_drag = drag
+        for _ in range(360):
+            car.step()
+        car.throttle = 1.0
+        t100 = None
+        for i in range(120 * 30):
+            car.step()
+            if car.speed_kmh() >= 100.0:
+                t100 = i / 120.0
+                break
+        car.throttle = 0.0
+        car.brake = 1.0
+        start = car.body.pos
+        n = 0
+        while car.speed_kmh() > 1.0 and n < 120 * 30:
+            car.step()
+            n += 1
+        results[name] = (t100, v_len(v_sub(car.body.pos, start)))
+        print("  %-7s 0-100 %s, braking %.1f m"
+              % (name, ("%.2f s" % t100) if t100 else "n/a", results[name][1]))
+
+    check("grass is slower than tarmac", results["grass"][0] > results["tarmac"][0])
+    check("dirt is the slowest", results["dirt"][0] > results["grass"][0])
+    check("braking is longer off-road",
+          results["dirt"][1] > results["tarmac"][1] * 1.2)
+    check("the car still works off-road", results["dirt"][0] is not None
+          and results["dirt"][0] < 12.0)
+
+
 def test_cornering():
     print("\n== steady state cornering ==")
     car = Car(REST_HEIGHT)
@@ -755,6 +952,8 @@ def main():
     test_drop()
     test_stability()
     test_smoothness()
+    test_reverse_latch()
+    test_surfaces()
     test_acceleration()
     test_braking()
     test_cornering()

@@ -1,0 +1,120 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "cargame decimate"
+ },
+ "scene": 0,
+ "scenes": [
+  {
+   "nodes": [
+    0
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "tree_lod",
+   "mesh": 0
+  }
+ ],
+ "meshes": [
+  {
+   "name": "tree_lod",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2
+     },
+     "indices": 3,
+     "material": 0
+    }
+   ]
+  }
+ ],
+ "materials": [
+  {
+   "name": "tree_lod_mat",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     1,
+     1,
+     1,
+     1
+    ],
+    "metallicFactor": 0.0,
+    "roughnessFactor": 0.9
+   },
+   "doubleSided": true
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 2109,
+   "type": "VEC3",
+   "min": [
+    -1.6137738227844238,
+    -1.610613686864326e-08,
+    -1.473434180021286
+   ],
+   "max": [
+    1.7049385905265808,
+    6.840055465698242,
+    1.7038410902023315
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5126,
+   "count": 2109,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5126,
+   "count": 2109,
+   "type": "VEC2"
+  },
+  {
+   "bufferView": 3,
+   "componentType": 5123,
+   "count": 10101,
+   "type": "SCALAR"
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 25308,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 25308,
+   "byteLength": 25308,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 50616,
+   "byteLength": 16872,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 67488,
+   "byteLength": 20202,
+   "target": 34963
+  }
+ ],
+ "buffers": [
+  {
+   "uri": "tree_lod.bin",
+   "byteLength": 87690
+  }
+ ]
+}
