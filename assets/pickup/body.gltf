@@ -81,7 +81,7 @@
   {
    "bufferView": 3,
    "componentType": 5123,
-   "count": 275472,
+   "count": 275466,
    "type": "SCALAR"
   }
  ],
@@ -107,14 +107,14 @@
   {
    "buffer": 0,
    "byteOffset": 1301216,
-   "byteLength": 550944,
+   "byteLength": 550932,
    "target": 34963
   }
  ],
  "buffers": [
   {
    "uri": "body.bin",
-   "byteLength": 1852160
+   "byteLength": 1852148
   }
  ]
 }

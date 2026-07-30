@@ -355,6 +355,74 @@ def check_shadowing(sources):
                                         % (os.path.basename(path), i, nm, nm))
 
 
+# Node paths used with $ or get_node() that must exist in the scene the script
+# is attached to. Checked against the generated scenes.
+# Which scene each script is attached to as the *root* node. A bare $Child on
+# these scripts is resolved from that root, so the path must exist there.
+ROOT_SCRIPTS = {
+    "vehicle.gd": ["car.tscn", "pickup.tscn"],
+    "game.gd": ["main.tscn"],
+}
+
+
+def _scene_children(text):
+    """{full path from the scene root: True} for one .tscn."""
+    out = set()
+    for m in re.finditer(r'\[node name="([^"]+)"(?:[^\]]*?parent="([^"]+)")?', text):
+        child, parent = m.group(1), m.group(2)
+        if parent is None:
+            continue                      # the root node itself
+        out.add(child if parent == "." else parent + "/" + child)
+    return out
+
+
+def check_node_paths(sources):
+    """Flags $Path that will not resolve at runtime.
+
+    'Node not found: "Model"' came from `@onready var _model := $Model` after
+    the model was moved under a smoothing node. `Model` still existed in the
+    scene, just at `Smooth/Model`, so merely checking that the *name* appears
+    somewhere is not enough - the path has to be resolvable from the node the
+    script is actually on.
+    """
+    scene_dir = os.path.join(ROOT, "scenes")
+    if not os.path.isdir(scene_dir):
+        return
+    scenes = {}
+    for f in os.listdir(scene_dir):
+        if f.endswith(".tscn"):
+            scenes[f] = _scene_children(open(os.path.join(scene_dir, f)).read())
+
+    # Paths reachable from anywhere, for scripts we cannot attribute to a scene.
+    anywhere = set()
+    for paths in scenes.values():
+        for p in paths:
+            parts = p.split("/")
+            for i in range(len(parts)):
+                anywhere.add("/".join(parts[i:]))
+
+    for path, text in sources.items():
+        base = os.path.basename(path)
+        owners = ROOT_SCRIPTS.get(base)
+        # Comments and strings mention node paths in prose; only code counts.
+        code = "\n".join(re.sub(r'"[^"]*"', '""', l).split("#")[0]
+                         for l in text.splitlines())
+        for m in re.finditer(r'(?<![\w.])\$([A-Za-z_][\w/]*)', code):
+            target = m.group(1)
+            line = code[:m.start()].count("\n") + 1
+            if owners:
+                # Must resolve from the root of every scene using this script.
+                missing = [s for s in owners
+                           if s in scenes and target not in scenes[s]]
+                if missing:
+                    PROBLEMS.append(
+                        "%s:%d: $%s is not a child of the root in %s"
+                        % (base, line, target, ", ".join(missing)))
+            elif target not in anywhere:
+                PROBLEMS.append(
+                    "%s:%d: $%s does not exist in any scene" % (base, line, target))
+
+
 def main():
     scripts = os.path.join(ROOT, "scripts")
     sources = {}
@@ -369,6 +437,7 @@ def main():
     check_calls(sources, sigs)
     check_shadowing(sources)
     check_unguarded_indexing(sources)
+    check_node_paths(sources)
 
     if PROBLEMS:
         print("\n%d problem(s) found:" % len(PROBLEMS))

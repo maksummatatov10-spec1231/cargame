@@ -231,10 +231,67 @@ def cluster(tris, cell):
         for p, _n, _t in tri:
             ids.append(order[(round(p[0] / cell), round(p[1] / cell),
                               round(p[2] / cell))])
-        if ids[0] == ids[1] or ids[1] == ids[2] or ids[0] == ids[2]:
+        if len(set(ids)) < 3:
+            continue
+        # Clustering can collapse a triangle to zero area even when its three
+        # vertices are distinct. Godot reports those as "face with non-finite
+        # normal" during LOD generation, so they are dropped here.
+        a = [pos[ids[0] * 3 + i] for i in range(3)]
+        b = [pos[ids[1] * 3 + i] for i in range(3)]
+        c = [pos[ids[2] * 3 + i] for i in range(3)]
+        u = [b[i] - a[i] for i in range(3)]
+        v = [c[i] - a[i] for i in range(3)]
+        cr = (u[1] * v[2] - u[2] * v[1],
+              u[2] * v[0] - u[0] * v[2],
+              u[0] * v[1] - u[1] * v[0])
+        if math.sqrt(sum(q * q for q in cr)) < 1e-12:
             continue
         indices.extend(ids)
+    _repair_normals(pos, nrm, indices)
     return pos, nrm, uv, indices
+
+
+def _repair_normals(pos, nrm, indices):
+    """Replaces zero-length averaged normals with a real face normal.
+
+    Averaging the normals inside a cluster can cancel them out where a thin
+    panel folds back on itself, leaving a zero vector. Those render black and
+    make Godot complain, so each one is rebuilt from a triangle that uses it.
+    """
+    broken = set()
+    for i in range(len(nrm) // 3):
+        n = nrm[i * 3:i * 3 + 3]
+        if math.sqrt(sum(q * q for q in n)) < 1e-6:
+            broken.add(i)
+    if not broken:
+        return
+    for k in range(0, len(indices), 3):
+        ids = indices[k:k + 3]
+        if not broken.intersection(ids):
+            continue
+        a = [pos[ids[0] * 3 + i] for i in range(3)]
+        b = [pos[ids[1] * 3 + i] for i in range(3)]
+        c = [pos[ids[2] * 3 + i] for i in range(3)]
+        u = [b[i] - a[i] for i in range(3)]
+        v = [c[i] - a[i] for i in range(3)]
+        cr = [u[1] * v[2] - u[2] * v[1],
+              u[2] * v[0] - u[0] * v[2],
+              u[0] * v[1] - u[1] * v[0]]
+        ln = math.sqrt(sum(q * q for q in cr))
+        if ln < 1e-12:
+            continue
+        for vid in ids:
+            if vid in broken:
+                for i in range(3):
+                    nrm[vid * 3 + i] = cr[i] / ln
+                broken.discard(vid)
+        if not broken:
+            break
+    # Anything still broken has no usable neighbour; point it up.
+    for vid in broken:
+        nrm[vid * 3] = 0.0
+        nrm[vid * 3 + 1] = 1.0
+        nrm[vid * 3 + 2] = 0.0
 
 
 def weld_exact(tris):

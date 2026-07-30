@@ -319,6 +319,14 @@ func _build_collision() -> void:
 func _build_mesh() -> void:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# SurfaceTool only includes a channel if it was set before the *first*
+	# vertex: set_color() bails out with an error once `first` is false and the
+	# COLOR bit is not already in the format. Miss that and every vertex colour
+	# is silently dropped, COLOR arrives at the shader as white, and the blend
+	# reads 1.0 rock everywhere - which is the flat grey ground.
+	st.set_color(Color.WHITE)
+	st.set_normal(Vector3.UP)
+	st.set_uv(Vector2.ZERO)
 
 	# Vertex colours carry the surface blend, so one material can paint grass,
 	# dirt and rock without needing a splat texture set.

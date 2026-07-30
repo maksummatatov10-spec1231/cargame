@@ -151,12 +151,17 @@ func _update_ribbon(index: int, wheel: RayWheel, delta: float) -> void:
 ## which is what it is designed for.
 func _rebuild() -> void:
 	_mesh.clear_surfaces()
-	var any := false
+
+	# Count the segments that will actually be drawn before opening a surface.
+	# Checking only "does a ribbon have 2 points" is not enough: every segment
+	# can still be fully faded, in which case nothing is emitted and
+	# surface_end() fails with "No vertices were added".
+	var drawable := 0
 	for ribbon in _ribbons:
-		if ribbon.size() >= 2:
-			any = true
-			break
-	if not any:
+		for i in range(1, ribbon.size()):
+			if _colour(ribbon[i - 1]).a > 0.004 or _colour(ribbon[i]).a > 0.004:
+				drawable += 1
+	if drawable == 0:
 		return
 
 	_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)

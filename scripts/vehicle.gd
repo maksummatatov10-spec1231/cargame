@@ -157,7 +157,21 @@ var _track := 1.49
 var _terrain : Terrain
 
 @onready var _wheel_root : Node3D = $Wheels
-@onready var _model : CarModel = $Model
+# The visual model now hangs off the smoothing node, so it is looked up rather
+# than assumed to be a direct child. Using $Model here threw
+# "Node not found: Model" on every spawn.
+@onready var _model : Node3D = _find_model()
+
+
+## Finds the visual model wherever it sits in the vehicle's subtree.
+func _find_model() -> Node3D:
+	var direct := get_node_or_null("Model")
+	if direct != null:
+		return direct as Node3D
+	var smoothed := get_node_or_null("Smooth/Model")
+	if smoothed != null:
+		return smoothed as Node3D
+	return null
 
 
 func _ready() -> void:
@@ -218,7 +232,7 @@ func _apply_inertia_tensor() -> void:
 func _process(delta: float) -> void:
 	for w in _wheels:
 		w.update_visuals(delta)
-	if _model:
+	if _model != null and _model.has_method("set_steering"):
 		_model.set_steering(steer_input, delta)
 
 

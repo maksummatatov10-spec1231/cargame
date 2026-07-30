@@ -92,6 +92,39 @@ PRESETS = {
         "wheel_mass": {"front": 34.0, "rear": 36.0},
         "body_size": [2.05, 2.00, 5.50],
     },
+    "defender": {
+        "meta": "defender_meta.json",
+        "model": None,
+        "parts": "res://assets/defender/",
+        # Real Defender 110 station wagon, kerb, with the expedition kit this
+        # model is wearing (roof rack, tent, spare, snorkel, winch).
+        "mass": 2550.0,
+        "front_weight": 0.51,   # near enough 50/50, engine forward but long tail
+        "travel": 0.26,         # live axles, a lot of articulation
+        # Static sag from the corner masses and rates: front 650 kg / 44000 =
+        # 0.145 m, rear 625 kg / 41000 = 0.149 m.
+        "ride_drop": 0.147,
+        # Sits high: the centre of mass is the reason a Defender leans. The z
+        # must agree with front_weight_bias or the springs carry a different
+        # split than the rest of the model assumes:
+        #   z = -1.395 + 0.49 * 2.790 = -0.028
+        "com": [0.0, 0.82, -0.028],
+        "radius": {"lf": 0.433, "rf": 0.433, "lr": 0.433, "rr": 0.433},
+        "width": {"lf": 0.255, "rf": 0.255, "lr": 0.255, "rr": 0.255},
+        # ~1.25 Hz: softer than the pickup, which is what long-travel 4x4s run.
+        "front_rate": 44000.0, "rear_rate": 41000.0,
+        "front_bump": 4000.0, "front_reb": 6800.0,
+        "rear_bump": 3700.0, "rear_reb": 6200.0,
+        # Deliberately soft bars: articulation matters more than roll control.
+        "front_arb": 6500.0, "rear_arb": 4000.0,
+        "camber": {"front": 0.0, "rear": 0.0},
+        "toe": {"front": 0.08, "rear": 0.0},
+        # All-terrain tyres: modest tarmac grip, generous slip angle.
+        "mu": {"front": 1.22, "rear": 1.24},
+        "peak_sa": {"front": 11.5, "rear": 12.0},
+        "wheel_mass": {"front": 32.0, "rear": 34.0},
+        "body_size": [1.97, 1.97, 4.70],
+    },
 }
 
 
@@ -142,7 +175,31 @@ def build(asset_dir, out_path, preset_name="bmw"):
     lines.append("centre_of_mass = %s" % fmt_vec(preset["com"]))
     lines.append("front_weight_bias = %.3f" % front_weight)
     lines.append("body_extents = %s" % fmt_vec(preset["body_size"]))
-    if is_pickup:
+    if preset_name == "defender":
+        # A 2.0 turbo diesel: strong low-down torque, low redline, short gears.
+        lines.append("peak_torque = 550.0")
+        lines.append("peak_torque_rpm = 1600.0")
+        lines.append("peak_power_rpm = 3500.0")
+        lines.append("redline_rpm = 4400.0")
+        lines.append("idle_rpm = 650.0")
+        lines.append("engine_inertia = 0.48")
+        lines.append("final_drive = 3.54")
+        lines.append("gear_ratios = Array[float]([4.71, 3.14, 2.11, 1.67, 1.29, 1.00])")
+        lines.append("front_brake_torque = 3300.0")
+        lines.append("rear_brake_torque = 2700.0")
+        lines.append("handbrake_torque = 3400.0")
+        lines.append("max_steer_deg = 38.0")
+        # A brick with a roof rack.
+        lines.append("drag_area = 1.62")
+        lines.append("front_downforce = 0.0")
+        lines.append("rear_downforce = 0.0")
+        lines.append("all_wheel_drive = true")
+        lines.append("front_torque_split = 0.5")
+        lines.append("differential_lock = 0.85")
+        # Tall and softly sprung, so it needs the assists more than the others.
+        lines.append("stability_control = 0.75")
+        lines.append("traction_control = 0.9")
+    elif is_pickup:
         # A tall, heavy 4x4 is geared shorter and revs lower than the coupe.
         lines.append("peak_torque = 620.0")
         lines.append("peak_torque_rpm = 2100.0")

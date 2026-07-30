@@ -1,4 +1,4 @@
-# CarGame — Stage 2.1
+# CarGame — Stage 2.2
 
 A driving game built in **Godot 4.3**. Third person, rear chase camera, a real
 BMW 1M model, and a vehicle simulation where everything that moves the car comes
@@ -250,18 +250,18 @@ catches all three of those call sites.
 
 ---
 
-## Two vehicles
+## Three vehicles
 
-| | BMW 1M | GHammer pickup |
-| --- | --- | --- |
-| Mass | 1 495 kg | 2 450 kg |
-| Drive | rear | all four, 40/60 split |
-| Wheelbase | 2.63 m | 3.13 m |
-| Tyre radius | 0.33 m | 0.47 m |
-| Suspension travel | 160 mm | 240 mm |
-| Ride frequency | 1.85 Hz | 1.35 Hz |
-| Peak grip | 1.58 | 1.30 (off-road tread) |
-| 0–100 | 4.92 s | slower, but it climbs |
+| | BMW 1M | Defender 110 | GHammer pickup |
+| --- | --- | --- | --- |
+| Mass | 1 495 kg | 2 550 kg | 2 450 kg |
+| Drive | rear | permanent 4WD 50/50 | 4WD 40/60 |
+| Wheelbase | 2.63 m | 2.79 m | 3.13 m |
+| Tyre radius | 0.33 m | 0.43 m | 0.47 m |
+| Travel | 160 mm | 260 mm | 240 mm |
+| Ride frequency | 1.85 Hz | 1.31 Hz | 1.35 Hz |
+| Peak grip | 1.58 | 1.22 (AT) | 1.30 (AT) |
+| Triangles | 100 k | 240 k | 191 k |
 
 Press `V` to swap. The vehicle is spawned by `scripts/game.gd` onto the terrain
 surface rather than being placed at a fixed height in the scene, because the

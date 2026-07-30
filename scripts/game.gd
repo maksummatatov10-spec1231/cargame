@@ -10,11 +10,12 @@ extends Node3D
 
 const VEHICLES := [
 	{"name": "BMW 1M", "scene": "res://scenes/car.tscn", "drop": 0.55},
+	{"name": "Defender 110", "scene": "res://scenes/defender.tscn", "drop": 0.6},
 	{"name": "GHammer pickup", "scene": "res://scenes/pickup.tscn", "drop": 0.6},
 ]
 
 ## Which vehicle to start in.
-@export_range(0, 1) var start_vehicle := 0
+@export_range(0, 2) var start_vehicle := 0
 ## Where on the terrain to spawn, in metres.
 @export var spawn_xz := Vector2(0.0, 8.0)
 

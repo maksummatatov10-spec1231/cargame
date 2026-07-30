@@ -198,3 +198,84 @@ Derived from the measured geometry rather than guessed:
 * 620 Nm at 2 100 rpm, 5 200 rpm redline, shorter gearing
 * off-road tread: peak grip 1.30 versus the BMW's 1.58, but a wider slip angle
   before it lets go
+
+---
+
+# The Defender 110
+
+`Adventure+Ready+Defender+110.fbx` — 45 MB, uploaded to `main`.
+
+## Animation
+
+**None.** Same as every other asset: no curves, skinning, poses or takes. The
+wheels are animated by the physics.
+
+## What is in it
+
+| | |
+| --- | --- |
+| Format | FBX 7400, 45.2 MB |
+| Nodes | 590 |
+| Meshes | 571 |
+| Vertices | 857 242 |
+| Polygons | 860 352 |
+
+Every node is named `desirefx.me_NNN`, so nothing could be identified by name.
+The parts were found geometrically instead: round meshes (two similar large
+extents, one much smaller) that repeat at four mirrored positions.
+
+```
+front axle  x = +13.11        rear axle  x = -14.70
+wheelbase   27.84 units       track      18.39 units
+tyre outer  8.65 units diameter, hub centre at y = 7.93
+```
+
+## Establishing scale
+
+The file is in arbitrary units. A real Defender 110 has a **2.79 m wheelbase**,
+which fixes the scale at `2.79 / 27.84 = 0.10021`. Everything else then falls
+out at the right size, which is the check that the assumption was correct:
+
+| | Converted | Real 110 |
+| --- | --- | --- |
+| Wheelbase | 2.790 m | 2.79 m |
+| Track | 1.837 m | 1.49 m (this one has wide off-road wheels) |
+| Tyre diameter | 0.867 m | 0.78 m (255/70R16; this model is on larger AT tyres) |
+| Length | 4.70 m | 4.76 m |
+| Width | 2.20 m | 1.97 m (mirrors and arch flares) |
+| Height | 1.97 m | 1.97 m |
+
+Two further corrections were needed:
+
+* the model is **yawed 2.90°** in plan — the axle centres are not aligned with
+  the X axis — so it is straightened before the axis swap
+* it is **not built around its own origin**: the mean hub centre sits at
+  `(-0.797, *, 3.770)`, so the car rendered offset sideways until that was
+  subtracted. With it removed the wheels come out symmetric at x = ±0.92.
+
+## Decimation
+
+860 k polygons is about nine times a normal game car:
+
+| Part | Cell | Tris |
+| --- | --- | --- |
+| body | 28 mm | 134 663 |
+| wheel ×4 | 11 mm | 4 738 each |
+| hub ×4 | 11 mm | ~21 000 each |
+| **total** | | **240 197** (from 860 352) |
+
+## Physics
+
+| | |
+| --- | --- |
+| Mass | 2 550 kg (kerb plus the rack, tent, spare and winch it is wearing) |
+| Weight split | 51% front, with the centre of mass placed to match |
+| Suspension | 260 mm travel, 1.31 Hz front / 1.29 Hz rear, sag 145 mm |
+| Anti-roll | deliberately soft — articulation matters more than roll control |
+| Drive | permanent 4WD, 50/50, 0.85 locking diff |
+| Engine | 550 Nm at 1 600 rpm, 4 400 rpm redline |
+| Tyres | all-terrain: peak grip 1.22, but 11.5° of slip angle before letting go |
+| Aero | 1.62 m² drag area — it is a brick with a roof rack |
+
+It sits high and leans, which is the point of a Defender, so the stability and
+traction assists are turned up relative to the other two vehicles.

@@ -19,6 +19,7 @@ Run:  python3 tools/project_check.py
 import json
 import os
 import re
+import math
 import struct
 import sys
 
@@ -146,6 +147,62 @@ def check_gltf():
           ", ".join(sorted(required - names)))
 
 
+def check_all_assets():
+    """Every glTF in the project must be clean geometry.
+
+    Godot logs "Ignoring face with non-finite normal in LOD generation" for
+    zero-area faces and zero-length normals. Clustering during decimation can
+    create both - a thin panel folding back on itself averages its normals to
+    zero - so every asset is verified rather than just the one that was noticed.
+    """
+    print("\n== asset geometry ==")
+    import glob
+    problems = []
+    checked = 0
+    for gp in sorted(glob.glob(os.path.join(ROOT, "assets", "*", "*.gltf"))):
+        gltf = json.load(open(gp))
+        buf_path = os.path.join(os.path.dirname(gp), gltf["buffers"][0]["uri"])
+        if not os.path.exists(buf_path):
+            problems.append("%s: missing buffer" % os.path.basename(gp))
+            continue
+        buf = open(buf_path, "rb").read()
+        checked += 1
+
+        def acc(i):
+            a = gltf["accessors"][i]
+            bv = gltf["bufferViews"][a["bufferView"]]
+            comp = {"VEC3": 3, "VEC2": 2, "SCALAR": 1}[a["type"]]
+            fmt = {5126: "f", 5123: "H", 5125: "I"}[a["componentType"]]
+            return struct.unpack_from("<%d%s" % (a["count"] * comp, fmt),
+                                      buf, bv.get("byteOffset", 0))
+
+        bad = degen = 0
+        for mesh in gltf["meshes"]:
+            for prim in mesh["primitives"]:
+                nrm = acc(prim["attributes"]["NORMAL"])
+                idx = acc(prim["indices"])
+                for i in range(0, len(nrm), 3):
+                    ln = math.sqrt(sum(nrm[i + j] ** 2 for j in range(3)))
+                    if not math.isfinite(ln) or ln < 0.5:
+                        bad += 1
+                for k in range(0, len(idx), 3):
+                    if len(set(idx[k:k + 3])) < 3:
+                        degen += 1
+        if bad or degen:
+            problems.append("%s: %d bad normals, %d degenerate faces"
+                            % (os.path.basename(gp), bad, degen))
+
+        for image in gltf.get("images", []):
+            uri = image.get("uri", "")
+            if uri and not os.path.exists(os.path.join(os.path.dirname(gp), uri)):
+                problems.append("%s: missing texture %s"
+                                % (os.path.basename(gp), uri))
+
+    print("  checked %d glTF files" % checked)
+    check("no zero-length normals or degenerate faces", not problems,
+          "; ".join(problems[:3]))
+
+
 def check_project():
     print("\n== project.godot ==")
     text = open(os.path.join(ROOT, "project.godot")).read()
@@ -188,10 +245,10 @@ def check_scripts():
     check("the camera is retargeted when the vehicle changes",
           "set_target" in game)
     check("the HUD is retargeted too", "set_vehicle" in game)
-    check("both vehicles are registered",
-          "car.tscn" in game and "pickup.tscn" in game)
+    check("all three vehicles are registered",
+          all(v in game for v in ("car.tscn", "pickup.tscn", "defender.tscn")))
 
-    for scene in ("car.tscn", "pickup.tscn"):
+    for scene in ("car.tscn", "pickup.tscn", "defender.tscn"):
         path = os.path.join(ROOT, "scenes", scene)
         check("%s exists" % scene, os.path.exists(path))
         if os.path.exists(path):
@@ -234,7 +291,10 @@ def check_common_mistakes():
           "wheel_visual == null" in wheel)
 
     # Scripts must not assume the model exists before it is instanced.
-    check("vehicle null-checks the model before driving it", "if _model:" in veh)
+    check("vehicle null-checks the model before driving it",
+          "_model != null" in veh and "has_method" in veh)
+    check("the model is looked up, not assumed to be a direct child",
+          "_find_model" in veh)
 
 
 def check_types():
@@ -260,6 +320,7 @@ def main():
     check_gltf()
     check_project()
     check_scripts()
+    check_all_assets()
     check_common_mistakes()
     check_types()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES else "FAILURES: " + ", ".join(FAILURES)))
