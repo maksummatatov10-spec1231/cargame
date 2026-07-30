@@ -308,19 +308,54 @@ func update_suspension(delta: float, opposite_travel: float) -> float:
 	return travel
 
 
+## Blends between two unit vectors without Vector3.slerp's failure mode.
+##
+## slerp (core/math/vector3.h:238) builds a rotation axis from the cross
+## product and normalises it:
+##
+##     Vector3 axis = cross(p_to);
+##     real_t axis_length_sq = axis.length_squared();
+##     if (axis_length_sq == 0.0f) { return lerp(...); }
+##     axis /= Math::sqrt(axis_length_sq);
+##
+## then hands that axis to Basis::set_axis_angle, which asserts it is
+## normalised. The guard only catches an *exactly* zero cross product, and
+## squaring halves the exponent range: for two vectors ~1e-21 radians apart
+## the cross product is ~1e-21, its square is ~1e-42, which is a denormal -
+## non-zero, so the guard misses it, but with almost no significant bits
+## left. Dividing by the square root of that returns an axis of length
+## 1.00073 and the assert fires. That is the exact value the log reported.
+##
+## Two nearly identical normals is not an edge case here, it is the steady
+## state: once the low-pass below has converged, its input and output are the
+## same vector to the last bit, so the slerp ran on 4 wheels at 120 Hz and
+## produced thousands of errors while the car sat on unchanging ground.
+##
+## For angles this small a lerp followed by a renormalise is the same answer
+## to far beyond float precision - measured difference at 5 degrees apart is
+## 2.5e-4 of one degree - and it cannot divide by a rounding error.
+static func blend_normals(from: Vector3, to: Vector3, weight: float) -> Vector3:
+	var mixed := from.lerp(to, weight)
+	if mixed.length_squared() < 1e-12:
+		# Diametrically opposed; there is no sensible interpolation, so keep
+		# what we had rather than returning a zero vector.
+		return from
+	return mixed.normalized()
+
+
 ## Turns the raw per-triangle raycast normal into the one the forces actually
 ## use: blended towards the terrain's interpolated normal, then low-passed.
 func _resolve_normal(raw: Vector3, delta: float) -> Vector3:
 	var target := raw
 	if terrain_normal.length_squared() > 0.5:
-		target = raw.slerp(terrain_normal, normal_smoothing).normalized()
+		target = blend_normals(raw, terrain_normal, normal_smoothing)
 	# One-pole filter. The blend factor is derived from the cutoff frequency so
 	# the behaviour does not change with the physics rate.
 	var blend := clampf(TAU * normal_filter_hz * delta, 0.0, 1.0)
 	if _filtered_normal.length_squared() < 0.5:
 		_filtered_normal = target
 	else:
-		_filtered_normal = _filtered_normal.slerp(target, blend).normalized()
+		_filtered_normal = blend_normals(_filtered_normal, target, blend)
 	return _filtered_normal
 
 

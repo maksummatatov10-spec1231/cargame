@@ -99,12 +99,15 @@ func _build() -> void:
 		+ "Тройная буферизация — без разрывов и без жёсткого потолка."))
 
 	# --- fps counter ------------------------------------------------------ #
-	var show := CheckBox.new()
-	show.text = "Показывать счётчик FPS в игре"
-	show.button_pressed = GameSettings.show_fps
-	show.add_theme_font_size_override("font_size", 17)
-	show.toggled.connect(func(on: bool) -> void: GameSettings.set_show_fps(on))
-	body.add_child(MenuTheme.make_row("Счётчик кадров", show, ""))
+	# Named show_counter, not show: "show" is a method on CanvasItem and
+	# shadowing it raises SHADOWED_VARIABLE_BASE_CLASS.
+	var show_counter := CheckBox.new()
+	show_counter.text = "Показывать счётчик FPS в игре"
+	show_counter.button_pressed = GameSettings.show_fps
+	show_counter.add_theme_font_size_override("font_size", 17)
+	show_counter.toggled.connect(
+		func(on: bool) -> void: GameSettings.set_show_fps(on))
+	body.add_child(MenuTheme.make_row("Счётчик кадров", show_counter, ""))
 
 	# --- vegetation density ----------------------------------------------- #
 	var density := HSlider.new()

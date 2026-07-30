@@ -93,8 +93,10 @@ static func make_backdrop(alpha: float) -> ColorRect:
 ## right, plus an explanation underneath.
 static func make_row(caption: String, control: Control,
 		explanation: String) -> VBoxContainer:
-	var wrap := VBoxContainer.new()
-	wrap.add_theme_constant_override("separation", 2)
+	# Named row, not wrap: "wrap" is a global function in GDScript and
+	# shadowing it raises SHADOWED_GLOBAL_IDENTIFIER.
+	var row := VBoxContainer.new()
+	row.add_theme_constant_override("separation", 2)
 
 	var line := HBoxContainer.new()
 	line.add_theme_constant_override("separation", 18)
@@ -108,7 +110,7 @@ static func make_row(caption: String, control: Control,
 
 	control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	line.add_child(control)
-	wrap.add_child(line)
+	row.add_child(line)
 
 	if explanation != "":
 		var note := Label.new()
@@ -116,6 +118,6 @@ static func make_row(caption: String, control: Control,
 		note.label_settings = label_settings(13, DIM)
 		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		note.custom_minimum_size = Vector2(600.0, 0.0)
-		wrap.add_child(note)
+		row.add_child(note)
 
-	return wrap
+	return row

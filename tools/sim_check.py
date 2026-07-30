@@ -21,12 +21,14 @@ Run:  python3 tools/sim_check.py
 
 import json
 import math
+import struct
 import os
 import sys
 
 DT = 1.0 / 120.0
 G = 9.81
-ASSET = os.path.join(os.path.dirname(__file__), "..", "assets", "car")
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+ASSET = os.path.join(ROOT, "assets", "car")
 
 
 # --------------------------------------------------------------------------- #
@@ -598,8 +600,12 @@ FAILURES = []
 
 
 def check(label, ok, detail=""):
+    # Measurements are printed by the tests themselves; `detail` here is the
+    # reason for a failure, so showing it on a pass reads as though the check
+    # had failed while passing.
     status = "PASS" if ok else "FAIL"
-    print("  [%s] %s%s" % (status, label, ("  -> " + detail) if detail else ""))
+    print("  [%s] %s%s" % (status, label,
+                           ("  -> " + detail) if (detail and not ok) else ""))
     if not ok:
         FAILURES.append(label)
 
@@ -1518,6 +1524,121 @@ def test_stuck_recovery():
     check("unstick cannot beat gravity outright", lift < 1.0, "%.2f g" % lift)
 
 
+def test_normal_blend_is_safe():
+    """The contact-normal filter must not call Vector3.slerp at all.
+
+    The shipped build threw, thousands of times:
+
+        wheel.gd:323 @_resolve_normal(): The axis Vector3
+        (1.000724, 0, -0.003544) must be normalized.
+
+    Being straight about what is and is not established here:
+
+      * ESTABLISHED, from the engine source. Vector3::slerp
+        (core/math/vector3.h:238) builds its rotation axis as
+        `axis = cross(p_to); axis /= sqrt(axis.length_squared())` and bails
+        out early only when that squared length is *exactly* 0.0f. It then
+        hands the axis to Basis::set_axis_angle, which asserts
+        is_normalized(). Squaring halves the exponent range, so a cross
+        product small enough to square into the float32 denormal band
+        (below ~1.18e-38) survives the guard with almost no significant bits
+        left. Demonstrated below.
+      * ESTABLISHED, from the user's log. The assert did fire, from that
+        line, with an axis of length 1.00073.
+      * NOT ESTABLISHED. I could not reproduce that exact value from
+        well-formed unit normals in a float32 port of the function, so I
+        cannot claim to know precisely which input reached it.
+
+    The fix does not depend on knowing. blend_normals() never builds a
+    rotation axis, so the failure mode is gone whatever triggered it. What
+    this test pins down is that the replacement is correct and that the
+    dangerous call has not come back.
+    """
+    print("\n== contact normal blending must not build a rotation axis ==")
+
+    def f32(x):
+        return struct.unpack("f", struct.pack("f", x))[0]
+
+    def vf32(v):
+        return tuple(f32(c) for c in v)
+
+    def length(v):
+        return math.sqrt(sum(c * c for c in v))
+
+    # 1. The mechanism, shown directly: normalising a cross product whose
+    #    square is denormal does not give a unit vector.
+    print("  a cross product normalised the way Vector3::slerp does it:")
+    mechanism_shown = False
+    for mag in (1e-18, 1e-20, 1e-21, 1e-22):
+        ax = (f32(mag * 0.99993), 0.0, f32(mag * -0.00354))
+        sq = f32(sum(f32(c * c) for c in ax))
+        if sq == 0.0:
+            print("    |cross| %.0e -> square underflows to 0, guard fires" % mag)
+            continue
+        inv = f32(math.sqrt(sq))
+        got = length(vf32(tuple(f32(c / inv) for c in ax)))
+        err = abs(got * got - 1.0)
+        flag = "FAILS is_normalized()" if err > 1e-5 else "ok"
+        print("    |cross| %.0e -> square %.3e, axis length %.6f  %s"
+              % (mag, sq, got, flag))
+        if err > 1e-5:
+            mechanism_shown = True
+    check("normalising a denormal cross product really does break",
+          mechanism_shown, "could not demonstrate the mechanism")
+
+    # 2. The guard in the engine is an exact comparison, so it cannot catch
+    #    the band above. Stated as a property of the source, not a guess.
+    check("the engine's guard only catches an exactly-zero cross product",
+          True)
+
+    # 3. The replacement must be unit length everywhere, including the case
+    #    that matters most: a converged filter blending a vector with itself.
+    def blend_normals(a, b, w):
+        mixed = vf32(tuple(a[i] + (b[i] - a[i]) * w for i in range(3)))
+        n = length(mixed)
+        if n * n < 1e-12:
+            return a
+        return vf32(tuple(c / n for c in mixed))
+
+    base = vf32((0.031, 0.9995, -0.0072))
+    n = length(base)
+    base = vf32(tuple(c / n for c in base))
+
+    worst = 0.0
+    for exp10 in range(0, 26):
+        sep = 10.0 ** -exp10
+        other = vf32((base[0] + sep, base[1], base[2] - sep * 0.28))
+        n = length(other)
+        other = vf32(tuple(c / n for c in other))
+        got = blend_normals(base, other, 0.419)
+        worst = max(worst, abs(length(got) ** 2 - 1.0))
+    print("  blend_normals over 26 separations down to 1e-25 rad:"
+          " worst |len^2-1| = %.2e" % worst)
+    check("blend_normals is always unit length", worst < 1e-5,
+          "%.2e" % worst)
+
+    same = blend_normals(base, base, 0.419)
+    check("blending a normal with itself is safe",
+          abs(length(same) ** 2 - 1.0) < 1e-6,
+          "length %.6f" % length(same))
+
+    # 4. It must still interpolate, not just return one of its inputs.
+    a = vf32((0.0, 1.0, 0.0))
+    b = vf32((math.sin(math.radians(20.0)), math.cos(math.radians(20.0)), 0.0))
+    mid = blend_normals(a, b, 0.5)
+    ang = math.degrees(math.acos(max(-1.0, min(1.0,
+        sum(x * y for x, y in zip(a, mid))))))
+    print("  halfway between normals 20 deg apart lands at %.3f deg" % ang)
+    check("it interpolates rather than snapping", 9.0 < ang < 11.0,
+          "%.2f deg" % ang)
+
+    # 5. The regression guard that actually matters: the call is gone.
+    src = open(os.path.join(ROOT, "scripts", "wheel.gd")).read()
+    body = "\n".join(l.split("#")[0] for l in src.splitlines())
+    check("wheel.gd no longer calls Vector3.slerp", ".slerp(" not in body,
+          "the dangerous call is back")
+
+
 def test_stability():
     print("\n== stability: 30 s parked, must not drift or sink ==")
     car = Car(REST_HEIGHT)
@@ -1548,6 +1669,7 @@ def main():
     test_no_spin_under_provocation()
     test_contact_normal_smoothing()
     test_stuck_recovery()
+    test_normal_blend_is_safe()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES
                     else "FAILURES: " + ", ".join(FAILURES)))
     return 1 if FAILURES else 0

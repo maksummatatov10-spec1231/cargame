@@ -298,6 +298,27 @@ func _default_species() -> Array[PlantSpecies]:
 	return out
 
 
+## Rotation that tips UP onto the given normal, safe for near-flat ground.
+##
+## The previous version guarded with `up != Vector3.UP`, an exact float
+## comparison, and then did Vector3.UP.cross(up).normalized(). On ground that
+## is merely *close* to flat - which the bilinear terrain normals produce
+## constantly - the cross product is tiny: its square underflows to a denormal
+## or to zero, normalising it returns a non-unit vector or (0,0,0), and
+## Basis(axis, angle) throws "must be normalized". Same root cause as the
+## wheel contact normal.
+##
+## Comparing the angle is the honest test: below it there is nothing to
+## rotate, so return identity instead of building a degenerate axis.
+static func _tilt_towards(up: Vector3) -> Basis:
+	var axis := Vector3.UP.cross(up)
+	# Guard on the axis length itself rather than on the vectors, since that
+	# is the quantity that has to be safely normalisable.
+	if axis.length_squared() < 1e-12:
+		return Basis()
+	return Basis(axis.normalized(), Vector3.UP.angle_to(up))
+
+
 ## Loads the single mesh out of a converted glTF, or null with a warning.
 func _load_mesh(mesh_name: String) -> Mesh:
 	var path := asset_dir + mesh_name + ".gltf"
@@ -382,9 +403,7 @@ func _scatter(entry: PlantSpecies) -> int:
 		# Sit props on the slope rather than standing them all bolt upright.
 		var normal := _terrain.sample_normal(x, z)
 		var up := Vector3.UP.lerp(normal, entry.ground_lean).normalized()
-		var tilt := Basis(Vector3.UP.cross(up).normalized() if up != Vector3.UP else Vector3.RIGHT,
-			Vector3.UP.angle_to(up)) if up != Vector3.UP else Basis()
-		xform = tilt * xform
+		xform = _tilt_towards(up) * xform
 		xform = xform.scaled(Vector3(s, s, s))
 		transforms.append(Transform3D(xform, Vector3(x, y, z)))
 

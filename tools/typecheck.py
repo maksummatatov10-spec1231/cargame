@@ -23,6 +23,7 @@ catch the class of mistake above.
 Run:  python3 tools/typecheck.py
 """
 
+import json
 import os
 import re
 import sys
@@ -239,24 +240,61 @@ def check_calls(sources, all_sigs):
 # Properties and methods on common Godot base classes that a local variable or
 # parameter must not shadow. Godot reports these as SHADOWED_VARIABLE_BASE_CLASS
 # and they are easy to introduce by accident.
-BASE_CLASS_MEMBERS = {
-    "Node": ["name", "owner", "scene_file_path", "process_mode", "multiplayer"],
-    "Node3D": ["basis", "scale", "position", "rotation", "transform", "quaternion",
-               "global_position", "global_rotation", "global_transform", "visible",
-               "top_level"],
-    "CanvasItem": ["material", "modulate", "visible", "z_index"],
-    "Control": ["size", "anchor_left", "theme", "tooltip_text"],
-    "RigidBody3D": ["mass", "inertia", "linear_velocity", "angular_velocity",
-                    "gravity_scale", "center_of_mass", "freeze"],
-    "RayCast3D": ["enabled", "target_position", "collision_mask", "exclude_parent"],
-}
+# Members of the engine classes the scripts extend. A local variable or a
+# parameter with one of these names is SHADOWED_VARIABLE_BASE_CLASS.
+#
+# These lists are not hand-written guesses any more. They are extracted from
+# the Godot 4.3 headers (scene/main/node.h, scene/main/canvas_item.h,
+# scene/3d/node_3d.h), because the hand-written version was missing
+# CanvasItem.show() and let `var show := CheckBox.new()` through - which is
+# exactly the error the editor reported.
+# Engine API extracted from the Godot 4.3 source, not written from memory.
+#
+# tools/godot_api.json holds the global utility functions (from
+# modules/gdscript/gdscript_utility_functions.cpp and
+# core/variant/variant_utility.cpp) and the members of Node, Node3D and
+# CanvasItem (from their headers). The hand-written lists this replaced had
+# 33 globals and four CanvasItem members, and were missing both wrap() and
+# CanvasItem.show() - which is exactly why
+#   var wrap := VBoxContainer.new()
+#   var show := CheckBox.new()
+# reached the editor and raised SHADOWED_GLOBAL_IDENTIFIER and
+# SHADOWED_VARIABLE_BASE_CLASS.
+_API_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "godot_api.json")
+with open(_API_PATH) as _f:
+    _API = json.load(_f)
 
-# Global functions that a variable must not shadow (SHADOWED_GLOBAL_IDENTIFIER).
-GLOBAL_FUNCTIONS = {
-    "load", "preload", "print", "range", "min", "max", "abs", "sign", "clamp",
-    "lerp", "str", "int", "float", "bool", "type_of", "instance_from_id",
-    "hash", "len", "assert", "char", "ord", "round", "floor", "ceil", "pow",
-    "sqrt", "sin", "cos", "tan", "log", "exp", "randi", "randf", "seed",
+GLOBAL_FUNCTIONS = set(_API["globals"])
+
+BASE_CLASS_MEMBERS = {
+    "Node": _API["members"]["Node"],
+    "Node3D": sorted(set(_API["members"]["Node"])
+                     | set(_API["members"]["Node3D"])
+                     | {"basis", "scale", "position", "rotation", "transform",
+                        "quaternion", "global_position", "global_rotation",
+                        "global_transform", "visible", "top_level"}),
+    "CanvasItem": sorted(set(_API["members"]["Node"])
+                         | set(_API["members"]["CanvasItem"])
+                         | {"material", "modulate", "visible", "z_index"}),
+    "Control": sorted(set(_API["members"]["Node"])
+                      | set(_API["members"]["CanvasItem"])
+                      | {"size", "anchor_left", "anchor_right", "anchor_top",
+                         "anchor_bottom", "theme", "tooltip_text", "position",
+                         "scale", "rotation", "pivot_offset", "focus_mode",
+                         "mouse_filter"}),
+    "RigidBody3D": sorted(set(_API["members"]["Node"])
+                          | set(_API["members"]["Node3D"])
+                          | {"mass", "inertia", "linear_velocity",
+                             "angular_velocity", "gravity_scale",
+                             "center_of_mass", "freeze", "sleeping",
+                             "linear_damp", "angular_damp", "continuous_cd"}),
+    "RayCast3D": sorted(set(_API["members"]["Node"])
+                        | set(_API["members"]["Node3D"])
+                        | {"enabled", "target_position", "collision_mask",
+                           "exclude_parent", "hit_from_inside",
+                           "collide_with_areas", "collide_with_bodies"}),
+    "CanvasLayer": _API["members"]["Node"],
 }
 
 
@@ -424,6 +462,66 @@ def check_inferable(sources):
                            m.group(1), base.group(1)))
 
 
+def check_normalisation_hazards(sources):
+    """Vector maths that can hand a non-normalised axis to the engine.
+
+    This is the class of bug behind thousands of runtime errors:
+
+        wheel.gd:323 @_resolve_normal(): The axis Vector3
+        (1.000724, 0, -0.003544) must be normalized.
+
+    Vector3::slerp (core/math/vector3.h:238) builds its rotation axis from a
+    cross product and guards only against it being *exactly* zero:
+
+        real_t axis_length_sq = axis.length_squared();
+        if (axis_length_sq == 0.0f) { return lerp(...); }
+        axis /= Math::sqrt(axis_length_sq);
+
+    Squaring halves the exponent range, so for vectors ~1e-21 rad apart the
+    square is a denormal: non-zero, so the guard misses it, but with almost
+    no significant bits left. The resulting axis has length 1.00073 and
+    Basis::set_axis_angle asserts. Nearly identical vectors are not an edge
+    case for a low-pass filter - they are its steady state.
+
+    Quaternion::slerp is fine; it has an explicit near-parallel branch.
+    """
+    for path, text in sources.items():
+        base = os.path.basename(path)
+        lines = text.splitlines()
+        for i, raw_line in enumerate(lines, 1):
+            line = raw_line.split("#")[0]
+
+            if ".slerp(" in line:
+                recv = re.search(r"(\w+)\.slerp\(", line)
+                quat = False
+                if recv:
+                    v = recv.group(1)
+                    decl = re.search(
+                        r"\bvar\s+%s\s*(?::\s*(\w+))?\s*:?=\s*(.+)"
+                        % re.escape(v), text)
+                    if decl:
+                        quat = ("Quaternion" in (decl.group(1) or "")
+                                or "Quaternion" in (decl.group(2) or "")
+                                or "get_rotation_quaternion" in (decl.group(2) or ""))
+                if not quat:
+                    PROBLEMS.append(
+                        "%s:%d: Vector3.slerp() normalises a cross product "
+                        "that can be denormal; use a guarded lerp instead"
+                        % (base, i))
+
+            if ".cross(" in line and ".normalized()" in line:
+                window = "\n".join(
+                    l.split("#")[0] for l in lines[max(0, i - 10):i + 3])
+                guarded = any(g in window for g in
+                              ("length_squared()", "length()",
+                               "is_zero_approx", "is_normalized"))
+                if not guarded:
+                    PROBLEMS.append(
+                        "%s:%d: cross(...).normalized() has no length guard; "
+                        "near-parallel inputs give a non-unit vector"
+                        % (base, i))
+
+
 def check_shadowing(sources):
     """Finds locals and parameters that shadow a base class member or a global."""
     for path, text in sources.items():
@@ -560,6 +658,7 @@ def main():
     print("  %d scripts, %d typed functions" % (len(sources), total))
     check_calls(sources, sigs)
     check_shadowing(sources)
+    check_normalisation_hazards(sources)
     check_local_shadows_member(sources)
     check_inferable(sources)
     check_unguarded_indexing(sources)

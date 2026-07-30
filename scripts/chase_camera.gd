@@ -141,13 +141,45 @@ func set_target(node: Node3D) -> void:
 	_snap_behind_target()
 
 
+## Heading of a transform: the direction its -Z axis points, flattened onto
+## the ground.
+##
+## NOT basis.get_euler().y. Euler decomposition in YXZ order folds pitch and
+## roll into the yaw term, so the moment the car noses over a crest or leans
+## in a corner that "yaw" stops being the direction the car is facing.
+## Measured: 11 degrees of error at 30 deg pitch / 20 deg roll, 48 degrees at
+## 60/40. That is the camera swinging away from behind the car over every
+## bump, which is what broke the chase view in v2.7.
+static func _heading_of(xform: Transform3D) -> float:
+	var forward := -xform.basis.z
+	var flat := Vector2(forward.x, forward.z)
+	if flat.length_squared() < 1e-8:
+		# Pointing straight up or down: -Z has no ground direction, so fall
+		# back to the roof axis, which is horizontal in exactly that case.
+		var up := -xform.basis.y
+		flat = Vector2(up.x, up.z)
+		if flat.length_squared() < 1e-8:
+			return 0.0
+	return atan2(-flat.x, -flat.y)
+
+
+## Frame rate independent smoothing weight.
+##
+## `rate * delta` is not: the camera ran in _physics_process at a fixed
+## 1/120 s, and moving it to _process handed it the frame time instead, so
+## its response started changing with the frame rate. The exponential form
+## closes the same fraction of the gap per second whatever the fps.
+static func _smoothing(rate: float, delta: float) -> float:
+	return 1.0 - exp(-rate * delta)
+
+
 func _snap_behind_target() -> void:
 	_curr_target = _target.global_transform
 	_prev_target = _curr_target
 	_curr_velocity = _vehicle.linear_velocity if _vehicle else Vector3.ZERO
 	_prev_velocity = _curr_velocity
 	_has_sample = true
-	_yaw = _target.global_rotation.y
+	_yaw = _heading_of(_curr_target)
 	_orbit = _yaw
 	global_position = _target.global_position
 	rotation = Vector3(0.0, _yaw, 0.0)
@@ -172,7 +204,7 @@ func _physics_process(_delta: float) -> void:
 	if _prev_target.origin.distance_to(_curr_target.origin) > 8.0:
 		_prev_target = _curr_target
 		global_position = _curr_target.origin
-		_yaw = _curr_target.basis.get_euler().y
+		_yaw = _heading_of(_curr_target)
 
 
 ## The camera runs at the display rate against an interpolated target, so it
@@ -188,8 +220,8 @@ func _process(delta: float) -> void:
 
 	var f := Engine.get_physics_interpolation_fraction()
 	var target_pos := _prev_target.origin.lerp(_curr_target.origin, f)
-	var target_yaw_now := _lerp_angle(_prev_target.basis.get_euler().y,
-		_curr_target.basis.get_euler().y, f)
+	var target_yaw_now := _lerp_angle(_heading_of(_prev_target),
+		_heading_of(_curr_target), f)
 	var velocity := _prev_velocity.lerp(_curr_velocity, f)
 	var speed := velocity.length()
 	var t := clampf(speed / speed_reference, 0.0, 1.0)
@@ -211,10 +243,10 @@ func _process(delta: float) -> void:
 				var travel_yaw := atan2(-flat.x, -flat.z)
 				target_yaw = _lerp_angle(target_yaw, travel_yaw, 0.45)
 		_yaw = _lerp_angle(_yaw, target_yaw,
-			clampf(rotation_smoothing * delta * (0.5 + t), 0.0, 1.0))
+			_smoothing(rotation_smoothing * (0.5 + t), delta))
 
 	global_position = global_position.lerp(target_pos,
-		clampf(position_smoothing * delta, 0.0, 1.0))
+		_smoothing(position_smoothing, delta))
 	rotation = Vector3(0.0, _yaw, 0.0)
 
 	arm.position = Vector3(0.0, height, 0.0)
