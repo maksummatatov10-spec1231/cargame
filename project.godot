@@ -7,13 +7,23 @@ config_version=5
 
 config/name="CarGame"
 config/description="Stage 1 — BMW 1M with raycast suspension, brush tyre model and wheel animation."
-run/main_scene="res://scenes/main.tscn"
+run/main_scene="res://scenes/main_menu.tscn"
 config/features=PackedStringArray("4.3", "Forward Plus")
 config/icon="res://icon.svg"
 
+; No frame rate cap by default.
+;
+; This used to say debug/settings/fps/force_fps=0, which is the *Godot 3*
+; setting name. Verified against the 4.3 source: grepping the whole engine
+; for "force_fps" returns nothing, while main.cpp:2377 reads
+; application/run/max_fps. So the old line was inert - the project had no
+; working frame rate control whatsoever, and the value below is the one the
+; engine actually honours. It is also overridden at runtime by
+; scripts/game_settings.gd from the settings menu.
+run/max_fps=0
+
 [debug]
 
-settings/fps/force_fps=0
 settings/stdout/verbose_stdout=false
 
 [display]
@@ -21,9 +31,16 @@ settings/stdout/verbose_stdout=false
 window/size/viewport_width=1600
 window/size/viewport_height=900
 window/stretch/mode="canvas_items"
-window/vsync/vsync_mode=1
-; Adaptive vsync: tears rather than halving the frame rate if a frame is late,
-; which keeps motion smooth on a weaker machine.
+; Vsync OFF by default.
+;
+; The old value was 1 (VSYNC_ENABLED), and that is why the game sat at a low
+; fixed number no matter what: with vsync on, the engine never presents faster
+; than the display refreshes, so the frame rate is pinned to the refresh rate
+; and any max_fps above it does nothing. A 75 Hz monitor showing 60 means
+; something below is also capping, but vsync guaranteed you could never see
+; more than 75 either way. Off by default, switchable in the settings menu:
+;   0 disabled, 1 enabled, 2 adaptive, 3 mailbox (triple buffered).
+window/vsync/vsync_mode=0
 window/energy_saving/keep_screen_on=true
 
 [importer_defaults]
@@ -40,6 +57,12 @@ texture={
 "mipmaps/generate": true,
 "roughness/mode": 0
 }
+
+[autoload]
+
+; Loaded before any scene and kept across scene changes, which is what lets
+; the pause menu change a video setting that the main menu also edits.
+GameSettings="*res://scripts/game_settings.gd"
 
 [input]
 
@@ -107,10 +130,15 @@ toggle_debug={
 ; it arrived for 3D in 4.4), so the smoothing is done in scripts/smoothing.gd
 ; instead. jitter_fix still helps by damping the reported frame delta.
 common/physics_ticks_per_second=120
-; If a frame runs long the engine must not try to catch up with a burst of
-; physics ticks - that turns one slow frame into several. Four is enough to
-; ride out a hitch without spiralling.
-common/max_physics_steps_per_frame=4
+; How many physics ticks a single frame may run.
+;
+; This was 4, which sounds conservative but has a nasty edge: at 120 Hz
+; physics the engine needs 120/fps ticks per frame, so 4 ticks only covers
+; down to 30 fps. Below that it cannot keep up and simulated time simply runs
+; slow - at 20 fps the car moves at 67% speed. A machine that is already
+; struggling then also goes into slow motion, which is exactly the wrong
+; failure mode. 8 is the engine default and covers down to 15 fps.
+common/max_physics_steps_per_frame=8
 common/physics_jitter_fix=0.5
 3d/default_gravity=9.81
 3d/solver/solver_iterations=24

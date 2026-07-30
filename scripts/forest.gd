@@ -224,6 +224,7 @@ var _crusher: CrushablePlants
 var _rng := RandomNumberGenerator.new()
 var _placed := 0
 var _colliders := 0
+var _density_scale := 1.0
 
 
 func _ready() -> void:
@@ -263,6 +264,21 @@ func build() -> void:
 
 	if species.is_empty():
 		species = _default_species()
+
+	# The settings menu owns the density at runtime; the exported value is the
+	# author's baseline. Only applied in game, so editing the map in the
+	# editor is not affected by whatever the player last chose.
+	#
+	# The autoload is reached through the scene tree rather than
+	# Engine.has_singleton(), which would always be false here: verified in
+	# main.cpp:3694, an autoload is registered as a *script language global
+	# constant* and added as a child of the root, not as an engine singleton.
+	_density_scale = maxf(0.01, density)
+	if not Engine.is_editor_hint() and is_inside_tree():
+		var settings := get_tree().root.get_node_or_null("GameSettings")
+		if settings != null:
+			_density_scale = maxf(0.01,
+				density * float(settings.get("vegetation_density")))
 
 	var skipped := 0
 	for entry in species:
@@ -316,7 +332,7 @@ func _scatter(entry: PlantSpecies) -> int:
 
 	var extent: float = _terrain.size * 0.5 - 6.0
 	var transforms: Array[Transform3D] = []
-	var wanted := maxi(0, int(round(entry.count * density)))
+	var wanted := maxi(0, int(round(entry.count * _density_scale)))
 	if wanted == 0:
 		return 0
 	var attempts := wanted * 4

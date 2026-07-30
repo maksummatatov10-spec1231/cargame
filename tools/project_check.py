@@ -28,7 +28,12 @@ FAILURES = []
 
 
 def check(label, ok, detail=""):
-    print("  [%s] %s%s" % ("PASS" if ok else "FAIL", label, ("  -> " + detail) if detail else ""))
+    # The detail is the *reason*, so only show it when there is something to
+    # explain. Printing "[PASS] the dead setting is gone -> it is still there"
+    # is worse than useless: several checks were phrased as failure messages
+    # and read as though they had failed while passing.
+    print("  [%s] %s%s" % ("PASS" if ok else "FAIL", label,
+                           ("  -> " + detail) if (detail and not ok) else ""))
     if not ok:
         FAILURES.append(label)
 
@@ -211,7 +216,16 @@ def check_project():
     check("main scene is set and exists", m and os.path.exists(res_path(m.group(1))),
           m.group(1) if m else "not set")
 
-    actions = set(re.findall(r"^(\w+)=\{", text, re.M))
+    # Godot registers the ui_* actions itself; they are not in project.godot
+    # unless overridden. Verified against the 4.3 source:
+    # core/input/input_map.cpp:438 binds ui_cancel to Escape in
+    # default_builtin_cache. Treating them as unmapped would be a false alarm.
+    BUILTIN_ACTIONS = {
+        "ui_accept", "ui_select", "ui_cancel", "ui_focus_next",
+        "ui_focus_prev", "ui_left", "ui_right", "ui_up", "ui_down",
+        "ui_page_up", "ui_page_down", "ui_home", "ui_end",
+    }
+    actions = set(re.findall(r"^(\w+)=\{", text, re.M)) | BUILTIN_ACTIONS
     used = set()
     for name in os.listdir(os.path.join(ROOT, "scripts")):
         if name.endswith(".gd"):
@@ -433,14 +447,45 @@ def check_no_tiny_colliders():
 
 
 def check_fps_counter():
-    print("\n== fps counter ==")
-    hud = open(os.path.join(ROOT, "scripts", "hud.gd")).read()
-    main = open(os.path.join(ROOT, "scenes", "main.tscn")).read()
+    """The fps counter must exist and must not be able to go missing.
 
-    check("there is an Fps label in the HUD scene",
-          '[node name="Fps" type="Label" parent="HUD"]' in main)
-    check("the script has the matching @onready",
-          re.search(r"@onready var _fps\s*:\s*Label\s*=\s*\$Fps", hud) is not None)
+    It previously lived in main.tscn and was fetched with `@onready var _fps:
+    Label = $Fps`. That combination produced
+
+        Node not found: "Fps" (relative to "/root/Main/HUD")
+
+    followed by an "Invalid assignment of property 'text' ... on a base object
+    of type 'null instance'" on every single frame afterwards, because $Node
+    does not fail loudly - it stores null and lets every later use explode.
+
+    The widgets are built in code now, so the check is that no HUD widget is
+    fetched with the unguarded $ syntax at all.
+    """
+    print("\n== fps counter ==")
+    hud_raw = open(os.path.join(ROOT, "scripts", "hud.gd")).read()
+    # Strip comments before pattern matching. The comment explaining this very
+    # bug contains the string "$Fps", and matching it would fail the check
+    # that the bug is fixed - a false alarm caused by the fix's own
+    # documentation.
+    hud = "\n".join(l.split("#")[0] for l in hud_raw.splitlines())
+
+    check("the fps label is created by the script, not fetched from a scene",
+          'made.name = label_name' in hud and '_need_label' in hud)
+    check("every widget lookup is guarded",
+          "get_node_or_null" in hud)
+
+    # This is the real regression guard: not one @onready $Path in the HUD.
+    unguarded = re.findall(r"@onready\s+var\s+\w+\s*:[^=]+=\s*\$([\w/]+)", hud)
+    check("no HUD widget is fetched with the unguarded $ syntax",
+          not unguarded, "still uses $%s" % ", $".join(unguarded))
+
+    # And nothing may write .text to something that was never checked.
+    for widget in ("_fps", "_speed", "_gear", "_hint", "_debug"):
+        declared = re.search(r"var %s\s*:\s*(Label|ProgressBar)\s*$"
+                             % widget, hud, re.M)
+        check("  %s is declared without a scene lookup" % widget,
+              declared is not None, "%s is still bound to a scene node" % widget)
+
     check("it is updated every frame", "_update_fps(delta)" in hud)
     check("the reading is averaged, not a single frame",
           "FPS_WINDOW" in hud and "_frames" in hud)
@@ -449,6 +494,137 @@ def check_fps_counter():
     check("draw calls and triangles are available for diagnosis",
           "RENDER_TOTAL_DRAW_CALLS_IN_FRAME" in hud
           and "RENDER_TOTAL_PRIMITIVES_IN_FRAME" in hud)
+    check("the counter can be switched off in the settings",
+          "GameSettings.show_fps" in hud)
+
+
+def check_frame_rate_control():
+    """The project must actually be able to exceed 60 fps.
+
+    Two independent things stopped it, both confirmed against the engine
+    source rather than guessed:
+
+      * project.godot set `debug/settings/fps/force_fps=0`. That is the
+        Godot 3 name. Grepping the whole 4.3 tree for "force_fps" returns
+        nothing; main.cpp:2377 reads `application/run/max_fps`. The old line
+        was inert.
+      * `display/window/vsync/vsync_mode=1` is VSYNC_ENABLED
+        (main.cpp:2369), which pins presentation to the display refresh rate
+        no matter what max_fps says.
+    """
+    print("\n== frame rate control ==")
+    raw = open(os.path.join(ROOT, "project.godot")).read()
+    # Same reason as above: the comment recording why force_fps was removed
+    # mentions it by name.
+    text = "\n".join(l for l in raw.splitlines() if not l.startswith(";"))
+
+    check("the dead Godot 3 fps setting is gone",
+          "force_fps" not in text, "force_fps is still there and does nothing")
+
+    m = re.search(r"^run/max_fps=(\d+)", text, re.M)
+    check("the setting the engine actually reads is present", m is not None,
+          "" if m else "application/run/max_fps is missing")
+    if m:
+        print("  run/max_fps = %s (%s)"
+              % (m.group(1), "unlimited" if m.group(1) == "0" else "capped"))
+        check("no frame cap by default", m.group(1) == "0", m.group(1))
+
+    m = re.search(r"^window/vsync/vsync_mode=(\d+)", text, re.M)
+    check("vsync is declared explicitly", m is not None)
+    if m:
+        modes = {"0": "disabled", "1": "enabled", "2": "adaptive",
+                 "3": "mailbox"}
+        print("  vsync_mode = %s (%s)" % (m.group(1),
+                                          modes.get(m.group(1), "?")))
+        check("vsync does not cap the frame rate by default",
+              m.group(1) in ("0", "3"),
+              "" if m.group(1) in ("0", "3")
+              else "mode %s pins fps to the refresh rate" % m.group(1))
+
+    # Physics must not be able to put the game into slow motion. At 120 Hz the
+    # engine needs 120/fps ticks per frame, so a cap of 4 only covers down to
+    # 30 fps; below that simulated time runs slow, which is the worst possible
+    # thing to do to a machine that is already struggling.
+    hz = int(re.search(r"common/physics_ticks_per_second=(\d+)",
+                       text).group(1))
+    steps = int(re.search(r"common/max_physics_steps_per_frame=(\d+)",
+                          text).group(1))
+    floor_fps = hz / steps
+    print("  physics %d Hz, max %d steps/frame -> time is real down to %.1f fps"
+          % (hz, steps, floor_fps))
+    check("simulated time stays real at low frame rates", floor_fps <= 20.0,
+          "" if floor_fps <= 20.0 else "slow motion below %.1f fps" % floor_fps)
+
+    # And the settings singleton must be loaded before any scene.
+    check("the settings autoload is registered",
+          re.search(r'GameSettings="\*res://scripts/game_settings\.gd"', text)
+          is not None)
+
+
+def check_menus():
+    print("\n== menus ==")
+    def source(name):
+        """Script text with comments stripped.
+
+        Necessary because the doc comment on pause_menu.gd explains why
+        PROCESS_MODE_ALWAYS is needed, and a plain substring search found the
+        explanation rather than the code - the check passed even after the
+        real assignment was removed. Verified by deleting it.
+        """
+        raw = open(os.path.join(ROOT, "scripts", name)).read()
+        return "\n".join(l.split("#")[0] for l in raw.splitlines())
+
+    menu = source("main_menu.gd")
+    pause = source("pause_menu.gd")
+    settings = source("settings_menu.gd")
+    game = source("game.gd")
+    project = open(os.path.join(ROOT, "project.godot")).read()
+
+    check("the game boots into the main menu",
+          'run/main_scene="res://scenes/main_menu.tscn"' in project)
+    check("the main menu scene exists",
+          os.path.exists(os.path.join(ROOT, "scenes", "main_menu.tscn")))
+
+    for caption in ("Играть", "Настройки", "Выход"):
+        check("  main menu has a %s button" % caption, caption in menu)
+    check("Играть loads the driving scene",
+          "change_scene_to_file(GAME_SCENE)" in menu)
+
+    check("Esc opens the pause menu", 'ui_cancel' in game and "_pause.toggle()" in game)
+    for caption in ("Продолжить", "В главное меню", "Выйти из игры"):
+        check("  pause menu has a %s button" % caption, caption in pause)
+    check("pausing actually pauses the tree", "get_tree().paused = true" in pause)
+    check("leaving the pause menu unpauses", "get_tree().paused = false" in pause)
+
+    # The classic pause-menu bug: the menu is paused along with the game and
+    # stops responding, so nothing can be clicked.
+    # Must be an actual assignment, not a mention in a comment.
+    assigned = r"process_mode\s*=\s*Node\.PROCESS_MODE_ALWAYS"
+    check("the pause menu keeps running while paused",
+          re.search(assigned, pause) is not None,
+          "process_mode is never set to ALWAYS")
+    check("the settings screen keeps running while paused",
+          re.search(assigned, settings) is not None,
+          "process_mode is never set to ALWAYS")
+    check("the settings singleton keeps running while paused",
+          re.search(assigned, source("game_settings.gd")) is not None,
+          "process_mode is never set to ALWAYS")
+    check("unpausing before a scene change",
+          "get_tree().paused = false" in pause
+          and "change_scene_to_file(MAIN_MENU)" in pause)
+
+    # Settings content.
+    gs = source("game_settings.gd")
+    check("fps limit is adjustable", "FPS_OPTIONS" in gs)
+    check("the unlimited option exists", "Без ограничения" in gs)
+    check("vsync is adjustable", "set_vsync" in settings)
+    check("settings survive a restart", "ConfigFile" in gs)
+    check("the limit is pushed into the engine", "Engine.max_fps = max_fps" in gs)
+    check("vsync is pushed into the engine",
+          "DisplayServer.window_set_vsync_mode" in gs)
+    # The interaction that makes "I set 240 and still see 75" baffling.
+    check("the menu explains that vsync overrides the fps limit",
+          "синхронизация ограничивает" in settings)
 
 
 def check_camera_smoothing():
@@ -492,6 +668,8 @@ def main():
     check_editable_forest()
     check_no_tiny_colliders()
     check_fps_counter()
+    check_frame_rate_control()
+    check_menus()
     check_camera_smoothing()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES else "FAILURES: " + ", ".join(FAILURES)))
     return 1 if FAILURES else 0

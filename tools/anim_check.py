@@ -31,7 +31,12 @@ FAILURES = []
 
 
 def check(label, ok, detail=""):
-    print("  [%s] %s%s" % ("PASS" if ok else "FAIL", label, ("  -> " + detail) if detail else ""))
+    # The detail is the *reason*, so only show it when there is something to
+    # explain. Printing "[PASS] the dead setting is gone -> it is still there"
+    # is worse than useless: several checks were phrased as failure messages
+    # and read as though they had failed while passing.
+    print("  [%s] %s%s" % ("PASS" if ok else "FAIL", label,
+                           ("  -> " + detail) if (detail and not ok) else ""))
     if not ok:
         FAILURES.append(label)
 

@@ -25,9 +25,16 @@ var vehicle: Vehicle
 var _terrain: Terrain
 var _camera: ChaseCamera
 var _hud: Control
+var _pause: PauseMenu
 
 
 func _ready() -> void:
+	# The pause menu is created here rather than placed in the scene, so it
+	# cannot go missing and cannot be forgotten when the scene is rebuilt.
+	_pause = PauseMenu.new()
+	_pause.name = "PauseMenu"
+	add_child(_pause)
+
 	var found := get_tree().get_nodes_in_group("terrain")
 	if not found.is_empty():
 		_terrain = found[0] as Terrain
@@ -39,6 +46,15 @@ func _ready() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Esc opens and closes the pause menu. Checked first and marked handled so
+	# it cannot also be read as a driving input on the same frame.
+	if event.is_action_pressed("ui_cancel"):
+		get_viewport().set_input_as_handled()
+		if _pause != null:
+			_pause.toggle()
+		return
+	if _pause != null and _pause.is_open():
+		return
 	if event.is_action_pressed("switch_vehicle"):
 		_spawn((current_index + 1) % VEHICLES.size())
 

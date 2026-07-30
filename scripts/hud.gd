@@ -18,12 +18,24 @@ var _worst_frame := 0.0
 var _fps_value := 0.0
 var _one_percent_low := 0.0
 
-@onready var _speed : Label = $Panel/Speed
-@onready var _gear : Label = $Panel/Gear
-@onready var _rpm : ProgressBar = $Panel/Rpm
-@onready var _hint : Label = $Hint
-@onready var _debug : Label = $Debug
-@onready var _fps : Label = $Fps
+# Looked up with get_node_or_null and *created if absent*, rather than with
+# $Name, which is what caused
+#   "Node not found: Fps (relative to /root/Main/HUD)"
+# followed by
+#   "Invalid assignment of property 'text' ... on a base object of type
+#    'null instance'"
+# every frame afterwards. @onready var x: Label = $Fps does not fail softly:
+# it stores null and then every single write to x.text is an error.
+#
+# Building the labels in code removes the whole failure mode. There is no
+# scene-file node that can go missing, no name to get out of step with the
+# script, and the HUD is guaranteed to be complete before anything reads it.
+var _speed : Label
+var _gear : Label
+var _rpm : ProgressBar
+var _hint : Label
+var _debug : Label
+var _fps : Label
 
 
 ## Points the readout at a different vehicle, used when they are swapped.
@@ -32,12 +44,94 @@ func set_vehicle(v: Vehicle) -> void:
 
 
 func _ready() -> void:
+	_bind_widgets()
 	if vehicle_path:
 		_vehicle = get_node_or_null(vehicle_path) as Vehicle
 	_debug.visible = false
-	_hint.text = "W / S  throttle & brake      A / D  steer      Shift  TURBO" \
-		+ "      Space  handbrake" \
-		+ "\nV  swap vehicle      C  camera      R  respawn      ~  telemetry"
+	_hint.text = "W / S  газ и тормоз      A / D  руль      Shift  ТУРБО" \
+		+ "      Пробел  ручник" \
+		+ "\nV  сменить машину      C  камера      R  респавн" \
+		+ "      ~  телеметрия      Esc  пауза"
+	if GameSettings:
+		GameSettings.changed.connect(_on_settings_changed)
+		_on_settings_changed()
+
+
+## Finds each widget, and builds it if the scene does not provide one.
+##
+## Every lookup is guarded, so a missing node degrades to a freshly created
+## one instead of a null that poisons every later frame.
+func _bind_widgets() -> void:
+	var panel := get_node_or_null("Panel") as Control
+	if panel == null:
+		panel = Control.new()
+		panel.name = "Panel"
+		panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+		panel.offset_left = -300.0
+		panel.offset_top = -140.0
+		panel.offset_right = -28.0
+		panel.offset_bottom = -28.0
+		panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(panel)
+
+	_speed = _need_label(panel, "Speed", 44)
+	_speed.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_gear = _need_label(panel, "Gear", 34)
+	_gear.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+
+	_rpm = get_node_or_null("Panel/Rpm") as ProgressBar
+	if _rpm == null:
+		_rpm = ProgressBar.new()
+		_rpm.name = "Rpm"
+		_rpm.show_percentage = false
+		_rpm.offset_top = 102.0
+		_rpm.offset_right = 272.0
+		_rpm.offset_bottom = 114.0
+		panel.add_child(_rpm)
+
+	_hint = _need_label(self, "Hint", 15)
+	_hint.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_hint.offset_left = 26.0
+	_hint.offset_top = -78.0
+	_hint.offset_right = 760.0
+	_hint.offset_bottom = -20.0
+
+	_debug = _need_label(self, "Debug", 15)
+	_debug.offset_left = 26.0
+	_debug.offset_top = 22.0
+	_debug.offset_right = 760.0
+	_debug.offset_bottom = 340.0
+
+	_fps = _need_label(self, "Fps", 18)
+	_fps.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_fps.offset_left = -240.0
+	_fps.offset_top = 18.0
+	_fps.offset_right = -22.0
+	_fps.offset_bottom = 86.0
+	_fps.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_fps.text = "-- fps"
+
+
+## Returns the named Label, creating it if the scene has not got one.
+func _need_label(parent: Node, label_name: String, font_size: int) -> Label:
+	var found := parent.get_node_or_null(label_name) as Label
+	if found != null:
+		return found
+	var made := Label.new()
+	made.name = label_name
+	made.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var settings := LabelSettings.new()
+	settings.font_size = font_size
+	settings.outline_size = 5
+	settings.outline_color = Color(0.0, 0.0, 0.0, 0.75)
+	made.label_settings = settings
+	parent.add_child(made)
+	return made
+
+
+func _on_settings_changed() -> void:
+	if _fps != null:
+		_fps.visible = GameSettings.show_fps
 
 
 func _process(delta: float) -> void:
