@@ -44,14 +44,17 @@ tonemap_white = 8.0
 ; SSAO at half resolution looks the same at this scale and costs about a third
 ; as much. SSIL is dropped: with SDFGI already providing bounce light it was
 ; paying twice for the same effect.
+; SSAO at half resolution with a small radius. Outdoors it only really shows
+; under the car and at the base of trees, so the expensive settings bought
+; very little.
 ssao_enabled = true
-ssao_radius = 1.0
-ssao_intensity = 2.4
-ssao_power = 1.8
-ssao_detail = 0.6
-ssao_horizon = 0.06
-ssao_light_affect = 0.15
-ssao_ao_channel_affect = 0.4
+ssao_radius = 0.8
+ssao_intensity = 2.0
+ssao_power = 1.5
+ssao_detail = 0.2
+ssao_horizon = 0.1
+ssao_light_affect = 0.1
+ssao_ao_channel_affect = 0.0
 ssil_enabled = false
 ; Reflections fade out quickly, so a shorter march is invisible but cheaper.
 ; Screen space reflections off: there is nothing reflective outdoors except the
@@ -62,9 +65,10 @@ ssr_enabled = false
 ; driving - constant stutter for indirect light you cannot really see against
 ; a bright sky. The sky ambient below does the same job for free outdoors.
 sdfgi_enabled = false
+; Glow costs a downsample chain every frame. Kept, but at a lower level.
 glow_enabled = true
 glow_normalized = true
-glow_intensity = 0.55
+glow_intensity = 0.45
 glow_strength = 0.9
 glow_bloom = 0.02
 glow_blend_mode = 1
@@ -91,10 +95,9 @@ adjustment_contrast = 1.18
 adjustment_saturation = 1.22
 
 [sub_resource type="CameraAttributesPractical" id="CamAttr"]
-dof_blur_far_enabled = true
-dof_blur_far_distance = 90.0
-dof_blur_far_transition = 60.0
-dof_blur_amount = 0.06
+; Depth of field is a full screen blur pass for an effect that is barely
+; noticeable while driving. Off.
+dof_blur_far_enabled = false
 auto_exposure_enabled = false
 
 [sub_resource type="LabelSettings" id="BigLabel"]
@@ -133,10 +136,12 @@ light_color = Color(1, 0.955, 0.878, 1)
 light_energy = 2.6
 light_indirect_energy = 1.0
 light_specular = 1.0
-; A real sun subtends about half a degree. Giving the light an angular size
-; turns on PCSS, so contact shadows are sharp and distant ones spread out -
-; the single biggest upgrade to how grounded the car looks.
-light_angular_distance = 0.55
+; PCSS soft shadows (any angular distance above 0) make every shadow lookup
+; take multiple samples to find the blocker distance first. On a mid-range GPU
+; that is one of the most expensive things in a scene. Fixed-width shadows with
+; a small blur read almost the same outdoors at a fraction of the cost.
+light_angular_distance = 0.0
+shadow_blur = 1.4
 shadow_enabled = true
 shadow_bias = 0.02
 shadow_normal_bias = 1.2

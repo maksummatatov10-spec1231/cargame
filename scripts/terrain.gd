@@ -364,15 +364,24 @@ func _build_mesh() -> void:
 			st.set_color(_surface_colour(x, z))
 			st.add_vertex(Vector3(wx, h, wz))
 
+	# Winding matters. Godot treats clockwise as front facing
+	# (POLYGON_FRONT_FACE_CLOCKWISE in rendering_device_commons.h), and the
+	# engine's own PlaneMesh achieves an upward face by emitting its points at
+	# (-x, 0, -z). This grid emits (+x, h, +z), so using PlaneMesh's index
+	# order produced the opposite winding: every triangle faced *down*. The
+	# terrain was invisible from above and fully textured from below, with the
+	# trees appearing to float over a wireframe.
+	#
+	# Swapping the second and third index of each triangle flips it back.
 	for z in resolution - 1:
 		for x in resolution - 1:
 			var i := z * resolution + x
 			st.add_index(i)
-			st.add_index(i + resolution)
-			st.add_index(i + 1)
 			st.add_index(i + 1)
 			st.add_index(i + resolution)
+			st.add_index(i + 1)
 			st.add_index(i + resolution + 1)
+			st.add_index(i + resolution)
 
 	st.generate_tangents()
 	var mesh := MeshInstance3D.new()

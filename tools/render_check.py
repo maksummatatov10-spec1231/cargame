@@ -132,7 +132,13 @@ def test_sun():
 
     check("sun is strong enough to model the car", energy >= 1.5, "%.2f" % energy)
     check("shadows are enabled", "shadow_enabled = true" in block)
-    check("soft shadows (PCSS) are on", angular > 0.0, "%.2f deg" % angular)
+    # PCSS is deliberately off. Any angular distance above zero makes every
+    # shadow lookup search for the blocker distance first, which is one of the
+    # most expensive things a mid-range GPU can be asked to do. Fixed-width
+    # shadows with a blur look nearly identical outdoors.
+    check("PCSS is off for performance", angular == 0.0, "%.2f deg" % angular)
+    check("shadows still have a soft edge",
+          re.search(r"shadow_blur = ([\d.]+)", block) is not None)
     check("shadows use cascades for range", "directional_shadow_mode = 2" in block)
     check("shadow range covers the drivable area",
           val("directional_shadow_max_distance") >= 150.0,
@@ -190,6 +196,64 @@ def test_ground():
     wheel = open(os.path.join(ROOT, "scripts", "wheel.gd")).read()
     check("grip actually changes with the surface", "surface_grip" in wheel)
     check("rolling resistance changes with the surface", "surface_drag" in wheel)
+
+
+def test_terrain_winding():
+    """The terrain must face up.
+
+    Godot treats clockwise as front facing, and its own PlaneMesh gets an
+    upward face by emitting points at (-x, 0, -z) with a particular index
+    order. The terrain grid emits (+x, h, +z), so copying that index order
+    verbatim reversed the winding and every triangle faced down: the ground was
+    invisible from above and fully textured from below.
+
+    This recomputes the geometric normal of a terrain triangle from the index
+    order in the source and checks it points the same way as the engine's
+    reference plane.
+    """
+    print("\n== terrain face winding ==")
+    src = open(os.path.join(ROOT, "scripts", "terrain.gd")).read()
+
+    block = src[src.index("for z in resolution - 1:"):]
+    block = block[:block.index("st.generate_tangents()")]
+    order = re.findall(r"st\.add_index\(([^)]+)\)", block)
+    check("six indices per quad are emitted", len(order) == 6,
+          "%d found" % len(order))
+    if len(order) != 6:
+        return
+
+    def offset(expr):
+        expr = expr.strip()
+        if expr == "i":
+            return (0, 0)
+        if expr == "i + 1":
+            return (1, 0)
+        if expr == "i + resolution":
+            return (0, 1)
+        if expr == "i + resolution + 1":
+            return (1, 1)
+        return None
+
+    def normal_y(tri):
+        pts = []
+        for e in tri:
+            off = offset(e)
+            if off is None:
+                return None
+            pts.append((off[0], 0.0, off[1]))
+        u = [pts[1][k] - pts[0][k] for k in range(3)]
+        v = [pts[2][k] - pts[0][k] for k in range(3)]
+        return u[2] * v[0] - u[0] * v[2]
+
+    # PlaneMesh reference: points at (-x, 0, -z) with Godot's index order gives
+    # a negative value from this same computation for an upward face.
+    for label, tri in (("first", order[0:3]), ("second", order[3:6])):
+        ny = normal_y(tri)
+        check("%s triangle of each quad faces up" % label,
+              ny is not None and ny < 0,
+              "value %s" % ("?" if ny is None else "%+.1f" % ny))
+
+    check("the shader culls back faces", "cull_back" in src)
 
 
 def test_forest():
@@ -315,6 +379,26 @@ def test_performance():
           all(('"name": "%s"' % n) not in src.split('"shadows": true')[0][-400:]
               for n in ("grass_tuft",)))
 
+    # The sky shader is per-pixel work over a large part of the screen, so its
+    # sample budget matters as much as any geometry count. The first version
+    # marched 28 steps with a 4-step light march and a 5-octave fbm called
+    # twice: ~1400 noise lookups per sky pixel, about 10 billion heavy
+    # operations per frame at 1080p, which no mid-range GPU can absorb.
+    sky = open(os.path.join(ROOT, "scripts", "sky_clouds.gd")).read()
+    m = re.search(r"MARCH_STEPS = (\d+)", sky)
+    march = int(m.group(1)) if m else 0
+    m = re.search(r"LIGHT_STEPS = (\d+)", sky)
+    light = int(m.group(1)) if m else 0
+    m = re.search(r"for \(int i = 0; i < (\d+); i\+\+\)", sky)
+    octaves = int(m.group(1)) if m else 0
+    per_pixel = march * (1 + light) * octaves * 2
+    print("  sky: %d march x (1+%d light) x %d octaves = ~%d noise lookups/pixel"
+          % (march, light, octaves, per_pixel))
+    check("sky shader stays within budget", per_pixel <= 300,
+          "%d lookups per pixel" % per_pixel)
+    check("sky renders at half resolution", "use_half_res_pass" in sky)
+    check("empty sky samples exit early", "return 0.0;" in sky)
+
     # Anything that redraws the whole scene must be justified.
     env = parse_env(open(os.path.join(ROOT, "scenes", "main.tscn")).read())
     heavy = [k for k in ("sdfgi_enabled", "ssil_enabled", "ssr_enabled",
@@ -345,6 +429,7 @@ def main():
     test_environment()
     test_sun()
     test_ground()
+    test_terrain_winding()
     test_forest()
     test_effects()
     test_clouds()

@@ -1,4 +1,4 @@
-# CarGame — Stage 2.3
+# CarGame — Stage 2.4
 
 A driving game built in **Godot 4.3**. Third person, rear chase camera, a real
 BMW 1M model, and a vehicle simulation where everything that moves the car comes
@@ -300,6 +300,9 @@ this scene, so you can also drop your own hand-placed props into it.
 | --- | --- | --- |
 | Triangles on screen | 6.10 M | 2.79 M |
 | **Shadow work per frame** | **37.5 M** | **6.7 M** |
+| **Sky shader** | **~1400 noise lookups/pixel** | **216, at half resolution** |
+| PCSS soft shadows | on | off (fixed width + blur) |
+| MSAA | 2x | off, FXAA only |
 | Trees | 2 LOD bands | 3 bands + distance culling |
 | SSIL | on | off (SDFGI already does bounce) |
 | SDFGI cascades | 4, with occlusion and feedback | 3, neither |
