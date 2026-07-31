@@ -194,6 +194,8 @@ var _pending_awd := false
 var _pending_split := 0.4
 
 var _terrain : Terrain
+var _damage : VehicleDamage
+var _recovery : VehicleRecovery
 
 @onready var _wheel_root : Node3D = $Wheels
 # The visual model now hangs off the smoothing node, so it is looked up rather
@@ -219,7 +221,10 @@ func _ready() -> void:
 	center_of_mass = centre_of_mass
 	# Let the solver run tight; the tyre forces change quickly.
 	continuous_cd = true
-	max_contacts_reported = 4
+	# Raised from 4: a corner impact reports several contacts at once, and
+	# the damage system picks the strongest. With only 4 slots a heavy hit
+	# could fill them all with glancing edge contacts and miss the real one.
+	max_contacts_reported = 12
 	contact_monitor = true
 	can_sleep = false
 	# Damping is left at zero: everything is done by the tyres and the aero.
@@ -249,6 +254,18 @@ func _ready() -> void:
 	var found := get_tree().get_nodes_in_group("terrain")
 	if not found.is_empty():
 		_terrain = found[0] as Terrain
+
+	# Collision damage. Created here rather than placed in the scene so every
+	# vehicle gets it without the three generated .tscn files needing to know.
+	_damage = VehicleDamage.new()
+	_damage.name = "Damage"
+	add_child(_damage)
+
+	# Getting unstuck and righting a rolled car is self-contained behaviour,
+	# so it lives in its own node rather than adding another 70 lines here.
+	_recovery = VehicleRecovery.new()
+	_recovery.name = "Recovery"
+	add_child(_recovery)
 
 	# Each corner needs to know the share of the car it carries, so it can size
 	# its own force limits correctly.
@@ -340,6 +357,11 @@ func _gather_input(delta: float) -> void:
 		rate *= clampf(1.0 - speed_kmh / 260.0, 0.35, 1.0)
 	_steer_position = move_toward(_steer_position, target, rate * delta)
 	steer_input = _steer_position
+	# A bent steering rack pulls to one side. Added to the input rather than
+	# to the output, so the driver can hold against it exactly as they would
+	# in a real car.
+	if _damage != null and is_instance_valid(_damage):
+		steer_input += _damage.steering_offset()
 
 	if Input.is_action_just_pressed("reset_car"):
 		reset_to_spawn()
@@ -355,6 +377,13 @@ func set_spawn(point: Transform3D) -> void:
 ## Assigning global_transform on a RigidBody3D only moves the node, and the
 ## physics server overwrites it again on the next tick. The move has to go
 ## through the server, which is what PhysicsServer3D.body_set_state does.
+## Contact forces are only available inside _integrate_forces - the state
+## object is not valid anywhere else - so the damage system is fed from here.
+func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
+	if _damage != null and is_instance_valid(_damage):
+		_damage.report_contacts(state)
+
+
 func reset_to_spawn() -> void:
 	PhysicsServer3D.body_set_state(get_rid(),
 		PhysicsServer3D.BODY_STATE_TRANSFORM, _spawn_transform)
@@ -378,9 +407,10 @@ func reset_to_spawn() -> void:
 	raw_forward = 0.0
 	raw_backward = 0.0
 	_tc_cut = 0.0
-	_stuck_timer = 0.0
-	_unstick_timer = 0.0
-	_flip_timer = 0.0
+	if _damage != null and is_instance_valid(_damage):
+		_damage.repair()
+	if _recovery != null and is_instance_valid(_recovery):
+		_recovery.reset()
 	_engine_speed = idle_rpm * TAU / 60.0
 
 
@@ -409,7 +439,8 @@ func _physics_process(delta: float) -> void:
 		w.apply_forces(self)
 
 	_apply_aerodynamics(vel)
-	_update_recovery(delta, forward_speed)
+	if _recovery != null and is_instance_valid(_recovery):
+		_recovery.update(delta, forward_speed)
 	_update_telemetry()
 
 
@@ -768,93 +799,6 @@ func _apply_stability_control(forward_speed: float) -> void:
 	# A gentle direct moment as well, so it responds immediately.
 	var moment := -correction * mass * 0.55 * stability_control
 	apply_torque(global_basis.y * moment)
-
-
-## Gets the car out of the two ways it can be stranded.
-##
-## Neither of these is a grip problem. First gear puts 15.9 kN at the road,
-## which is 1.08 g, and the steepest ground on the whole map is a 0.85 grade -
-## even on dirt (effective mu 0.96) there is nothing here the car cannot climb.
-## What actually happens is geometric:
-##
-##  1. **Beaching.** The worst crest on the map rises 1.00 m over the 2.63 m
-##     wheelbase. The body sits about 0.2 m above the line between the contact
-##     patches, so the floor grounds out and the wheels lift off. No amount of
-##     throttle helps because no wheel is touching anything.
-##  2. **On its roof.** Nothing in the simulation can ever right it.
-##
-## The fix is deliberately mild: it only fires when the car is being asked to
-## move and genuinely is not, it lifts rather than teleports, and it stops as
-## soon as a wheel finds grip again. Driving normally never triggers it.
-func _update_recovery(delta: float, forward_speed: float) -> void:
-	var upright := global_basis.y.dot(Vector3.UP)
-
-	# --- on its roof --------------------------------------------------- #
-	if auto_right and upright < -0.2 and linear_velocity.length() < 2.0:
-		_flip_timer += delta
-		if _flip_timer > flip_time:
-			_right_the_car()
-			_flip_timer = 0.0
-		return
-	_flip_timer = 0.0
-
-	# --- beached ------------------------------------------------------- #
-	var wants_to_move := maxf(raw_forward, raw_backward) > 0.2
-	var moving := absf(forward_speed) > stuck_speed \
-		or linear_velocity.length() > stuck_speed
-	var wheels_down := 0
-	for w in _wheels:
-		if w.grounded and w.spring_force > 1.0:
-			wheels_down += 1
-
-	# Being grounded on three or four wheels and simply not accelerating is a
-	# driving problem, not a stuck one, so only a car that has lost most of
-	# its contact patches counts.
-	if wants_to_move and not moving and wheels_down < 2:
-		_stuck_timer += delta
-	else:
-		_stuck_timer = maxf(0.0, _stuck_timer - delta * 2.0)
-
-	if _stuck_timer > stuck_time and _unstick_timer <= 0.0:
-		_unstick_timer = unstick_duration
-		_stuck_timer = 0.0
-
-	if _unstick_timer > 0.0:
-		_unstick_timer = maxf(0.0, _unstick_timer - delta)
-		# Lift the whole car just enough to unload the floor, and push it the
-		# way the driver is asking. Applied at the centre of mass so it does
-		# not spin the car.
-		var lift := Vector3.UP * mass * 9.81 * unstick_lift
-		var direction := -global_basis.z if raw_forward > raw_backward else global_basis.z
-		# Along the ground, not into it.
-		direction = (direction - Vector3.UP * direction.dot(Vector3.UP)).normalized()
-		apply_central_force(lift + direction * mass * 2.6)
-		# Kill the roll and pitch rates so it settles flat rather than
-		# bouncing off at an angle.
-		angular_velocity *= 0.86
-
-
-## Rolls the car back onto its wheels, in place, at rest.
-func _right_the_car() -> void:
-	var yaw := global_basis.get_euler().y
-	var lift := 0.6
-	if _terrain != null:
-		lift = _terrain.sample_height(global_position.x, global_position.z) \
-			+ 0.8 - global_position.y
-		lift = maxf(lift, 0.4)
-	var upright := Transform3D(Basis(Vector3.UP, yaw),
-		global_position + Vector3.UP * lift)
-	PhysicsServer3D.body_set_state(get_rid(),
-		PhysicsServer3D.BODY_STATE_TRANSFORM, upright)
-	PhysicsServer3D.body_set_state(get_rid(),
-		PhysicsServer3D.BODY_STATE_LINEAR_VELOCITY, Vector3.ZERO)
-	PhysicsServer3D.body_set_state(get_rid(),
-		PhysicsServer3D.BODY_STATE_ANGULAR_VELOCITY, Vector3.ZERO)
-	linear_velocity = Vector3.ZERO
-	angular_velocity = Vector3.ZERO
-	for w in _wheels:
-		w.spin = 0.0
-		w.reset_state()
 
 
 func _distribute_drive(axle_torque: float) -> void:

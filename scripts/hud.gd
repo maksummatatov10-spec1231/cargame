@@ -36,6 +36,7 @@ var _rpm : ProgressBar
 var _hint : Label
 var _debug : Label
 var _fps : Label
+var _damage_label : Label
 
 
 ## Points the readout at a different vehicle, used when they are swapped.
@@ -102,6 +103,14 @@ func _bind_widgets() -> void:
 	_debug.offset_right = 760.0
 	_debug.offset_bottom = 340.0
 
+	_damage_label = _need_label(self, "Damage", 17)
+	_damage_label.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_damage_label.offset_left = 26.0
+	_damage_label.offset_top = 18.0
+	_damage_label.offset_right = 320.0
+	_damage_label.offset_bottom = 44.0
+	_damage_label.visible = false
+
 	_fps = _need_label(self, "Fps", 18)
 	_fps.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	_fps.offset_left = -240.0
@@ -153,6 +162,8 @@ func _process(delta: float) -> void:
 	var g := _vehicle.gear
 	_gear.text = "R" if g < 0 else ("N" if g == 0 else str(g))
 
+	_update_damage()
+
 	if _show_debug:
 		_debug.text = _build_telemetry()
 
@@ -188,6 +199,26 @@ func _update_fps(delta: float) -> void:
 		_fps.modulate = Color(1.0, 0.45, 0.4)
 
 
+## Damage readout. Hidden while the car is intact, so it is not clutter on a
+## clean run - it appearing at all is the signal that something happened.
+func _update_damage() -> void:
+	if _damage_label == null:
+		return
+	var damage := _vehicle.get_node_or_null("Damage") as VehicleDamage
+	if damage == null or damage.total_damage < 0.01:
+		_damage_label.visible = false
+		return
+	_damage_label.visible = true
+	var pct := roundi(damage.total_damage * 100.0)
+	_damage_label.text = "ПОВРЕЖДЕНИЯ  %d%%   (R — ремонт)" % pct
+	if damage.total_damage > 0.6:
+		_damage_label.modulate = Color(1.0, 0.42, 0.36)
+	elif damage.total_damage > 0.25:
+		_damage_label.modulate = Color(1.0, 0.78, 0.36)
+	else:
+		_damage_label.modulate = Color(0.95, 0.92, 0.7)
+
+
 func _build_telemetry() -> String:
 	var lines := PackedStringArray()
 	# Where the time is actually going. On a slow machine the split between
@@ -211,6 +242,14 @@ func _build_telemetry() -> String:
 	var v := _vehicle.linear_velocity
 	lines.append("speed %6.2f m/s   height %5.2f m" % [v.length(), _vehicle.global_position.y])
 	lines.append("")
+	var damage := _vehicle.get_node_or_null("Damage") as VehicleDamage
+	if damage != null:
+		lines.append("damage %.0f%%  corners %s  dents %d" % [
+			damage.total_damage * 100.0,
+			str(damage.corner_damage.map(
+				func(d: float) -> int: return roundi(d * 100.0))),
+			damage.dent_count()])
+		lines.append("")
 	lines.append("corner  load(N)  travel  slipR   slipA   Fx      Fy")
 	for w in _vehicle.get_wheels():
 		lines.append("%-6s %8.0f  %5.3f  %+6.3f  %+5.1f  %+7.0f %+7.0f" % [

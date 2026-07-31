@@ -23,6 +23,7 @@ import json
 import math
 import struct
 import os
+import re
 import sys
 
 DT = 1.0 / 120.0
@@ -1780,6 +1781,95 @@ def test_all_wheel_drive():
                   "AWD %.2f s vs RWD %.2f s" % (a, r))
 
 
+def test_collision_damage():
+    """Damage must change the physics, not just the paintwork.
+
+    Nothing here is scripted as "now the car understeers". Damage scales the
+    quantities the tyre model already reads - camber, toe, peak friction -
+    so the handling consequences fall out of the simulation the same way
+    they do from a real bent corner.
+    """
+    print("\n== collision damage ==")
+    src = open(os.path.join(ROOT, "scripts", "damage.gd")).read()
+    body = "\n".join(l.split("#")[0] for l in src.splitlines())
+
+    # 1. Dents must be a vertex shader, not a rebuilt mesh. Rebuilding the
+    #    BMW's 88,326 vertices from GDScript is ~26 ms - one and a half
+    #    frames - for a single impact.
+    check("dents are done in a vertex shader",
+          "DENT_SHADER" in body and "void vertex()" in body)
+    check("the mesh is never rebuilt at runtime",
+          "add_surface_from_arrays" not in body and
+          "surface_get_arrays" not in body,
+          "rebuilding a 88k-vertex mesh costs ~26 ms per impact")
+    check("the dent count is bounded", "MAX_DENTS" in body and
+          "_next_dent = (_next_dent + 1) % MAX_DENTS" in body,
+          "unbounded dents would grow the cost without limit")
+
+    # 2. Contacts can only be read inside _integrate_forces.
+    vehicle = open(os.path.join(ROOT, "scripts", "vehicle.gd")).read()
+    check("contacts are read from _integrate_forces",
+          "func _integrate_forces" in vehicle
+          and "report_contacts(state)" in vehicle,
+          "the contact state is not valid anywhere else")
+    check("enough contacts are reported to catch a real impact",
+          re.search(r"max_contacts_reported = (\d+)", vehicle) is not None
+          and int(re.search(r"max_contacts_reported = (\d+)",
+                            vehicle).group(1)) >= 8)
+
+    # 3. Damage must reach the physical parameters.
+    for field in ("camber_deg", "toe_deg", "friction_coefficient",
+                  "peak_torque"):
+        check("  damage changes %s" % field, field in body,
+              "handling damage would be cosmetic")
+    check("damage scales from the design figures, not the current ones",
+          "_base_camber" in body and "_base_friction" in body
+          and "_base_torque" in body,
+          "applying twice would compound")
+
+    # 4. Work out what a bent corner actually costs, using wheel.gd's own
+    #    formula, and check it is a real effect rather than a token one.
+    grip_loss = float(re.search(r"var grip_loss := ([\d.]+)", body).group(1))
+    power_loss = float(re.search(r"var power_loss := ([\d.]+)", body).group(1))
+    base_camber, base_mu = -1.4, 1.55
+
+    def effective_mu(damage):
+        camber = base_camber - 6.0 * damage
+        mu = base_mu * (1.0 - grip_loss * damage)
+        # wheel.gd: mu *= cos(camber) * 0.02 + 0.98
+        return mu * (math.cos(math.radians(camber)) * 0.02 + 0.98)
+
+    stock = effective_mu(0.0)
+    wrecked = effective_mu(1.0)
+    print("  peak grip at a corner: %.3f stock -> %.3f wrecked (%.0f%%)"
+          % (stock, wrecked, 100.0 * wrecked / stock))
+    print("  peak torque: 450 -> %.0f Nm" % (450.0 * (1.0 - power_loss)))
+
+    check("a wrecked corner loses real grip", wrecked < stock * 0.8,
+          "only %.0f%% lost" % (100.0 * (1.0 - wrecked / stock)))
+    check("but a wrecked car is still driveable", wrecked > stock * 0.5,
+          "%.0f%% of grip left - unrecoverable" % (100.0 * wrecked / stock))
+    check("engine damage is noticeable", power_loss > 0.2)
+    check("engine damage is not crippling", power_loss < 0.6)
+
+    # 5. Small knocks must not damage the car - driving over rough ground
+    #    generates constant small contacts.
+    threshold = float(re.search(r"var impact_threshold := ([\d.]+)",
+                                body).group(1))
+    mass = 1495.0
+    # An impulse of J on a mass m is a velocity change of J/m.
+    print("  impact threshold %.0f Ns = %.2f m/s (%.1f km/h) of sudden change"
+          % (threshold, threshold / mass, threshold / mass * 3.6))
+    check("kerbs and scrapes do not dent the car",
+          threshold / mass > 0.3,
+          "%.2f m/s is low enough that rough ground would damage the car"
+          % (threshold / mass))
+
+    # 6. Respawn must undo it.
+    check("respawn repairs the car", "func repair()" in body
+          and "_damage.repair()" in vehicle)
+
+
 def test_stability():
     print("\n== stability: 30 s parked, must not drift or sink ==")
     car = Car(REST_HEIGHT)
@@ -1813,6 +1903,7 @@ def main():
     test_normal_blend_is_safe()
     test_engine_power_setting()
     test_all_wheel_drive()
+    test_collision_damage()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES
                     else "FAILURES: " + ", ".join(FAILURES)))
     return 1 if FAILURES else 0
