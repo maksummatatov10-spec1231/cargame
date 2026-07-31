@@ -407,7 +407,9 @@ static func impact_energy(impulse: float, mass: float) -> float:
 ## Uses a square root, because the DEPTH of a dent grows roughly with the
 ## square root of the energy that made it - crumple zones are designed to
 ## absorb progressively more force as they collapse further.
-static func severity_from_energy(energy: float, reference: float) -> float:
-	if reference <= 0.001:
+## `reference_joules`, not `reference`: RefCounted already has a reference()
+## method (ref_counted.cpp:49), and a parameter of that name shadows it.
+static func severity_from_energy(energy: float, reference_joules: float) -> float:
+	if reference_joules <= 0.001:
 		return 0.0
-	return clampf(sqrt(energy / reference), 0.0, 1.0)
+	return clampf(sqrt(energy / reference_joules), 0.0, 1.0)

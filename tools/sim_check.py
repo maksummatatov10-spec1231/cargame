@@ -1869,8 +1869,11 @@ def test_damage_energy_scale():
     check("energy is derived from impulse and mass",
           "impulse * impulse / (2.0 * mass)" in src,
           "damage is not energy-based")
+    # Matched on the parameter's NAME before, so renaming it to
+    # reference_joules - to stop it shadowing RefCounted.reference() - broke a
+    # check that was still describing correct code. Match the shape instead.
     check("severity uses a square root of energy",
-          "sqrt(energy / reference)" in src)
+          re.search(r"sqrt\(\s*energy\s*/\s*\w+\s*\)", src) is not None)
 
     mass = 1495.0
     ref = float(re.search(r"var reference_energy := ([\d.]+)",

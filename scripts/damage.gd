@@ -56,11 +56,28 @@ signal engine_died(reason: String)
 ## Dents tracked at once. Each is two vec4s of uniform, so 16 is nothing.
 const MAX_DENTS := 16
 
-const DENT_SHADER := """
+## Body shader source, with ALPHA_LINE swapped for the right ending.
+##
+## There are two builds of it, and the difference is not cosmetic. Writing to
+## ALPHA at all sets `uses_alpha`, and scene_shader_forward_clustered.cpp:416
+## then reports the material as NOT casting shadows:
+##
+##     bool has_base_alpha = (uses_alpha && ...) || has_read_screen_alpha;
+##     return !has_alpha || (uses_depth_prepass_alpha && ...);
+##
+## The v3.7 shader assigned ALPHA unconditionally, so every panel of every car
+## silently stopped casting a shadow. The opaque build simply never mentions
+## ALPHA, which is the only way to keep the shadow pass.
+const DENT_SHADER_BODY := """
 shader_type spatial;
-render_mode cull_back, diffuse_burley;
+RENDER_MODE_LINE
 
-uniform vec4 albedo_colour = vec4(0.6, 0.6, 0.6, 1.0);
+// `source_color` matters: without it Godot hands the value over raw, and a
+// Color set from GDScript is sRGB while the shader works in linear light.
+// That is what turned the BMW's dark red (0.81, 0.25, 0.27) into pink
+// (0.91, 0.53, 0.56) - see variant_converters.h:211, which only calls
+// srgb_to_linear() when the uniform carries this hint.
+uniform vec4 albedo_colour : source_color = vec4(0.6, 0.6, 0.6, 1.0);
 uniform float metallic_value = 0.3;
 uniform float roughness_value = 0.5;
 uniform bool has_texture = false;
@@ -130,7 +147,7 @@ void fragment() {
 	// Damaged metal loses its polish: scuffed, bare, duller.
 	float wear = max(dent_amount * 0.8, paint_wear * 0.5);
 	ALBEDO = mix(base.rgb, base.rgb * 0.55 + vec3(0.05), wear);
-	ALPHA = base.a;
+	ALPHA_LINE
 	METALLIC = mix(metallic_value, metallic_value * 0.4, wear);
 	ROUGHNESS = mix(roughness_value, min(roughness_value + 0.45, 1.0), wear);
 }
@@ -139,6 +156,18 @@ void fragment() {
 # --------------------------------------------------------------------------- #
 #  configuration
 # --------------------------------------------------------------------------- #
+
+## Two Shader instances shared by every surface of every car - one opaque,
+## one alpha-blended.
+##
+## This used to be `Shader.new()` inside _make_dent_material(), which runs per
+## surface: 64 identical shaders for the BMW alone, recompiled from scratch on
+## every respawn and every press of V. A Shader is a resource, not per-object
+## state - the per-surface values live in the ShaderMaterial - so one of each
+## is enough, and they are compiled once for the whole process.
+static var _shader_opaque: Shader = null
+static var _shader_alpha: Shader = null
+
 
 @export_group("Impact")
 ## Impulses below this are ignored. 900 N s on a 1495 kg car is 0.60 m/s of
@@ -306,7 +335,18 @@ func _walk(node: Node) -> Array[Node]:
 
 
 func _collect_materials() -> void:
+	# Everything below builds render resources, so bail out if this car is on
+	# its way out. Pressing V calls queue_free() on the old vehicle, and a
+	# deferred call already in the queue still runs afterwards - it would
+	# hand materials to a node the renderer is releasing, which is where the
+	# "material_casts_shadows: Parameter \"material\" is null" spam came from
+	# (renderer_scene_cull.cpp:3956 looks up a surface material that has just
+	# been freed).
 	if _vehicle == null or not is_instance_valid(_vehicle):
+		return
+	if _vehicle.is_queued_for_deletion() or not _vehicle.is_inside_tree():
+		return
+	if is_queued_for_deletion() or not is_inside_tree():
 		return
 	var model := _vehicle.get_node_or_null("Smooth/Model")
 	if model == null:
@@ -323,18 +363,42 @@ func _collect_materials() -> void:
 	_measure_body()
 
 
+## Returns the shared Shader for this kind of surface, compiling it once.
+static func _get_shader(transparent: bool) -> Shader:
+	if transparent:
+		if _shader_alpha == null:
+			_shader_alpha = Shader.new()
+			_shader_alpha.code = _shader_source(true)
+		return _shader_alpha
+	if _shader_opaque == null:
+		_shader_opaque = Shader.new()
+		_shader_opaque.code = _shader_source(false)
+	return _shader_opaque
+
+
+static func _shader_source(transparent: bool) -> String:
+	var mode := "render_mode cull_back, diffuse_burley, depth_draw_opaque;" \
+		if transparent \
+		else "render_mode cull_back, diffuse_burley;"
+	var ending := "ALPHA = base.a;" if transparent else ""
+	return DENT_SHADER_BODY \
+		.replace("RENDER_MODE_LINE", mode) \
+		.replace("ALPHA_LINE", ending)
+
+
 ## Wraps an imported material so it can be dented, passing its look through
 ## unchanged - the shader only adds displacement and wear.
 func _make_dent_material(source: Material) -> ShaderMaterial:
-	var shader := Shader.new()
-	shader.code = DENT_SHADER
+	var std := source as StandardMaterial3D
+	var transparent := std != null \
+		and std.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED
+
 	var mat := ShaderMaterial.new()
-	mat.shader = shader
+	mat.shader = _get_shader(transparent)
 
 	var albedo := Color(0.6, 0.6, 0.6)
 	var metallic := 0.3
 	var roughness := 0.5
-	var std := source as StandardMaterial3D
 	if std != null:
 		albedo = std.albedo_color
 		metallic = std.metallic
@@ -342,11 +406,18 @@ func _make_dent_material(source: Material) -> ShaderMaterial:
 		if std.albedo_texture != null:
 			mat.set_shader_parameter("albedo_texture", std.albedo_texture)
 			mat.set_shader_parameter("has_texture", true)
-		if std.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED:
+		# The wrapper shader replaced a StandardMaterial3D that knew how to be
+		# transparent, so the glass gets the alpha build and is drawn after
+		# the solid bodywork.
+		if transparent:
 			mat.render_priority = 1
 
-	mat.set_shader_parameter("albedo_colour",
-		Vector4(albedo.r, albedo.g, albedo.b, albedo.a))
+	# Pass the Color itself, NOT a Vector4 of its components. Godot only
+	# applies the sRGB -> linear conversion for a source_color uniform when
+	# the value arrives as Variant::COLOR (variant_converters.h:209-214); a
+	# Vector4 falls through to the raw path and skips it entirely. Sending
+	# components was the other half of the pink bodywork.
+	mat.set_shader_parameter("albedo_colour", albedo)
 	mat.set_shader_parameter("metallic_value", metallic)
 	mat.set_shader_parameter("roughness_value", roughness)
 	mat.set_shader_parameter("dent_points", _dent_points)
@@ -394,11 +465,11 @@ func _update_temperature(delta: float) -> void:
 		_vehicle.engine_rpm / maxf(_vehicle.redline_rpm, 1.0), 0.0, 1.0)
 	var heat := 22.0 + 70.0 * engine_load
 
-	var coolant_fraction := coolant / maxf(coolant_capacity, 0.01)
+	var coolant_left := coolant / maxf(coolant_capacity, 0.01)
 	var airflow := clampf(_vehicle.speed_kmh / 90.0, 0.0, 1.0)
 	# With no coolant the radiator does nothing at all; airflow alone only helps
 	# a little through the block itself.
-	var cooling := (0.25 + 0.75 * coolant_fraction) * (0.4 + 0.6 * airflow)
+	var cooling := (0.25 + 0.75 * coolant_left) * (0.4 + 0.6 * airflow)
 	cooling *= 1.0 - 0.6 * part_damage.get(DamageModel.Part.RADIATOR, 0.0)
 
 	var target := 20.0 + heat * (1.0 - cooling * 0.72)
