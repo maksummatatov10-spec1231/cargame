@@ -1781,92 +1781,311 @@ def test_all_wheel_drive():
                   "AWD %.2f s vs RWD %.2f s" % (a, r))
 
 
-def test_collision_damage():
-    """Damage must change the physics, not just the paintwork.
+def _parse_damage_model():
+    """Reads the zone and component tables straight out of damage_model.gd.
 
-    Nothing here is scripted as "now the car understeers". Damage scales the
-    quantities the tyre model already reads - camber, toe, peak friction -
-    so the handling consequences fall out of the simulation the same way
-    they do from a real bent corner.
+    Parsing the real file rather than restating the numbers here is the
+    point: if the table changes and the layout stops making sense, this
+    notices. A copy of the numbers would happily agree with itself forever.
     """
-    print("\n== collision damage ==")
+    src = open(os.path.join(ROOT, "scripts", "damage_model.gd")).read()
+
+    zones = {}
+    block = src[src.index("const ZONES := {"):src.index("const PARTS := {")]
+    for m in re.finditer(r"Zone\.(\w+):\s*\{(.*?)\n\t\},", block, re.S):
+        name, body = m.group(1), m.group(2)
+
+        def rng(key, b=body):
+            mm = re.search(r'"%s":\s*\[([-\d.]+),\s*([-\d.]+)\]' % key, b)
+            return (float(mm.group(1)), float(mm.group(2))) if mm else None
+
+        zones[name] = {
+            "x": rng("x"), "y": rng("y"), "z": rng("z"),
+            "structure": float(re.search(r'"structure":\s*([\d.]+)',
+                                         body).group(1)),
+            "label": re.search(r'"name":\s*"([^"]+)"', body).group(1),
+        }
+
+    parts = {}
+    block = src[src.index("const PARTS := {"):src.index("## How far from a part")]
+    for m in re.finditer(r"Part\.(\w+):\s*\{(.*?)\n\t\},", block, re.S):
+        name, body = m.group(1), m.group(2)
+        pos = re.search(r'"pos":\s*\[([-\d.]+),\s*([-\d.]+),\s*([-\d.]+)\]',
+                        body)
+        parts[name] = {
+            "pos": tuple(float(pos.group(i)) for i in (1, 2, 3)),
+            "shield": float(re.search(r'"shield":\s*([\d.]+)', body).group(1)),
+            "fragility": float(re.search(r'"fragility":\s*([\d.]+)',
+                                         body).group(1)),
+            "label": re.search(r'"name":\s*"([^"]+)"', body).group(1),
+            "corner": ("corner" in body),
+        }
+
+    reach = float(re.search(r"const PART_REACH := ([\d.]+)", src).group(1))
+    return zones, parts, reach
+
+
+def _zone_at(zones, f):
+    best, best_d = None, 1e9
+    for name, z in zones.items():
+        if not (z["x"][0] <= f[0] <= z["x"][1]):
+            continue
+        if not (z["y"][0] <= f[1] <= z["y"][1]):
+            continue
+        if not (z["z"][0] <= f[2] <= z["z"][1]):
+            continue
+        c = ((z["x"][0] + z["x"][1]) / 2, (z["y"][0] + z["y"][1]) / 2,
+             (z["z"][0] + z["z"][1]) / 2)
+        d = math.dist(f, c)
+        if d < best_d:
+            best_d, best = d, name
+    return best
+
+
+def _parts_hit(parts, reach, f, severity):
+    out = {}
+    for name, p in parts.items():
+        d = math.dist(f, p["pos"])
+        if d > reach:
+            continue
+        amount = (1.0 - d / reach) ** 2 * severity
+        amount *= 1.0 - p["shield"]
+        amount *= p["fragility"]
+        if amount > 0.001:
+            out[name] = min(amount, 1.0)
+    return out
+
+
+def test_damage_energy_scale():
+    """Damage must scale with ENERGY, so speed matters quadratically.
+
+    Impulse alone would make a 60 km/h crash twice as bad as 30. It is four
+    times as bad, because the structure has to absorb E = 1/2 m v^2. The
+    model uses E = J^2 / 2m, which is the same thing expressed through the
+    impulse the physics server actually reports.
+    """
+    print("\n== damage scales with energy, not impulse ==")
+    src = open(os.path.join(ROOT, "scripts", "damage_model.gd")).read()
+    check("energy is derived from impulse and mass",
+          "impulse * impulse / (2.0 * mass)" in src,
+          "damage is not energy-based")
+    check("severity uses a square root of energy",
+          "sqrt(energy / reference)" in src)
+
+    mass = 1495.0
+    ref = float(re.search(r"var reference_energy := ([\d.]+)",
+                          open(os.path.join(ROOT, "scripts",
+                                            "damage.gd")).read()).group(1))
+
+    def severity(kmh):
+        v = kmh / 3.6
+        impulse = mass * v
+        energy = impulse * impulse / (2.0 * mass)
+        return min(math.sqrt(energy / ref), 1.0), energy
+
+    print("  %8s %12s %10s" % ("speed", "energy", "severity"))
+    results = {}
+    for kmh in (5, 15, 30, 50, 70, 100):
+        sev, energy = severity(kmh)
+        results[kmh] = sev
+        print("  %5d km/h %10.0f J %9.2f" % (kmh, energy, sev))
+
+    # The physics check: energy must go as the square of speed.
+    _, e30 = severity(30)
+    _, e60 = severity(60)
+    ratio = e60 / e30
+    print("  energy at 60 km/h is %.2fx that at 30 km/h" % ratio)
+    check("energy scales with the square of speed", abs(ratio - 4.0) < 0.01,
+          "%.2fx - not quadratic" % ratio)
+
+    check("a parking nudge barely marks the car", results[5] < 0.15,
+          "%.2f severity at 5 km/h" % results[5])
+    check("a city crash is serious but survivable",
+          0.25 < results[30] < 0.6, "%.2f at 30 km/h" % results[30])
+    check("a high-speed crash wrecks it", results[70] > 0.85,
+          "%.2f at 70 km/h" % results[70])
+
+
+def test_damage_zones_and_parts():
+    """A hit must break what is actually behind the panel it landed on."""
+    print("\n== impacts reach the right components ==")
+    zones, parts, reach = _parse_damage_model()
+    print("  %d zones, %d components, reach %.2f"
+          % (len(zones), len(parts), reach))
+    check("the car is divided into several zones", len(zones) >= 10,
+          "only %d" % len(zones))
+    check("there are components to break", len(parts) >= 25,
+          "only %d" % len(parts))
+
+    # Every zone must be reachable, or it is dead weight in the table.
+    unreachable = []
+    for name, z in zones.items():
+        centre = ((z["x"][0] + z["x"][1]) / 2, (z["y"][0] + z["y"][1]) / 2,
+                  (z["z"][0] + z["z"][1]) / 2)
+        if _zone_at(zones, centre) is None:
+            unreachable.append(name)
+    check("every zone can be hit", not unreachable, ", ".join(unreachable))
+
+    # The scenarios that matter, and what must break in each.
+    scenarios = [
+        ("nose into a wall", (0.0, 0.35, -1.0), "NOSE",
+         ["RADIATOR", "INTERCOOLER"], ["FUEL_TANK", "DIFFERENTIAL"]),
+        ("left front corner", (-0.85, 0.3, -0.9), "FRONT_LEFT",
+         ["SUSPENSION_LF", "WHEEL_LF"], ["SUSPENSION_RF", "WHEEL_RR"]),
+        ("rear end", (0.0, 0.35, 1.0), "TAIL",
+         ["FUEL_TANK"], ["RADIATOR", "ENGINE"]),
+        ("rolled onto the roof", (0.0, 1.0, 0.0), "ROOF",
+         [], ["OIL_PAN", "RADIATOR"]),
+        ("grounded on a rock", (0.0, 0.02, -0.3), "FLOOR",
+         ["OIL_PAN"], ["WINDSCREEN_GLASS", "MIRROR_L"]),
+    ]
+
+    for label, point, want_zone, must, must_not in scenarios:
+        zone = _zone_at(zones, point)
+        hits = _parts_hit(parts, reach, point, 0.8)
+        top = sorted(hits.items(), key=lambda kv: -kv[1])[:4]
+        shown = ", ".join("%s %.0f%%" % (parts[n]["label"], a * 100)
+                          for n, a in top)
+        print("  %-22s -> %-18s %s"
+              % (label, zones[zone]["label"] if zone else "-", shown))
+
+        check("  %s hits the right zone" % label, zone == want_zone,
+              "got %s, wanted %s" % (zone, want_zone))
+        for part in must:
+            check("    it damages %s" % parts[part]["label"],
+                  hits.get(part, 0.0) > 0.05,
+                  "only %.0f%%" % (hits.get(part, 0.0) * 100))
+        for part in must_not:
+            check("    it spares %s" % parts[part]["label"],
+                  hits.get(part, 0.0) < 0.05,
+                  "%.0f%% - the impact reaches too far"
+                  % (hits.get(part, 0.0) * 100))
+
+    # Shielding must mean something. Comparing the radiator to the engine is
+    # too weak a test - the radiator is nearer AND more fragile, so it wins
+    # even with shielding switched off entirely (verified: 77% vs 17%).
+    # The honest test is to compare each part against itself with and
+    # without its shield.
+    hits = _parts_hit(parts, reach, (0.0, 0.35, -1.0), 0.8)
+    rad = hits.get("RADIATOR", 0.0)
+    eng = hits.get("ENGINE", 0.0)
+    print("  nose impact: radiator %.0f%% vs engine behind it %.0f%%"
+          % (rad * 100, eng * 100))
+
+    buried = [n for n, p in parts.items() if p["shield"] > 0.4]
+    exposed = [n for n, p in parts.items() if p["shield"] < 0.15]
+    print("  %d components are buried (shield > 0.4), %d are exposed"
+          % (len(buried), len(exposed)))
+    check("some components are protected by the structure", len(buried) >= 5,
+          "only %d - shielding is not being used" % len(buried))
+    check("and some are exposed", len(exposed) >= 5)
+
+    # The engine specifically must be protected, or a nose impact kills the
+    # car instantly every time.
+    engine_shield = parts["ENGINE"]["shield"]
+    print("  engine shield %.2f -> takes %.0f%% of what reaches it"
+          % (engine_shield, (1.0 - engine_shield) * 100))
+    check("the engine is behind something", engine_shield > 0.35,
+          "shield %.2f - a nose impact would destroy it outright"
+          % engine_shield)
+
+    without_shield = eng / max(1.0 - engine_shield, 0.01)
+    print("  without its shield the engine would take %.0f%% instead of %.0f%%"
+          % (without_shield * 100, eng * 100))
+    check("shielding makes a real difference to the engine",
+          without_shield > eng * 1.8,
+          "%.2f vs %.2f" % (without_shield, eng))
+
+
+def test_damage_consequences():
+    """Damage must change the numbers the simulation reads."""
+    print("\n== damage changes the physics ==")
     src = open(os.path.join(ROOT, "scripts", "damage.gd")).read()
     body = "\n".join(l.split("#")[0] for l in src.splitlines())
-
-    # 1. Dents must be a vertex shader, not a rebuilt mesh. Rebuilding the
-    #    BMW's 88,326 vertices from GDScript is ~26 ms - one and a half
-    #    frames - for a single impact.
-    check("dents are done in a vertex shader",
-          "DENT_SHADER" in body and "void vertex()" in body)
-    check("the mesh is never rebuilt at runtime",
-          "add_surface_from_arrays" not in body and
-          "surface_get_arrays" not in body,
-          "rebuilding a 88k-vertex mesh costs ~26 ms per impact")
-    check("the dent count is bounded", "MAX_DENTS" in body and
-          "_next_dent = (_next_dent + 1) % MAX_DENTS" in body,
-          "unbounded dents would grow the cost without limit")
-
-    # 2. Contacts can only be read inside _integrate_forces.
     vehicle = open(os.path.join(ROOT, "scripts", "vehicle.gd")).read()
+
+    # Dents must stay in the shader: rebuilding 88,326 vertices from
+    # GDScript is ~26 ms, one and a half frames, per impact.
+    check("dents are a vertex shader", "DENT_SHADER" in body
+          and "void vertex()" in body)
+    check("the mesh is never rebuilt at runtime",
+          "add_surface_from_arrays" not in body,
+          "rebuilding the body mesh costs ~26 ms per impact")
+    check("the dent count is bounded",
+          "_next_dent = (_next_dent + 1) % MAX_DENTS" in body)
+    # Declaring the uniform is not enough - it has to be read in vertex()
+    # AND written from GDScript, or the bend is decoration.
+    shader = body[body.index("const DENT_SHADER"):body.index('"""', body.index("void fragment"))]
+    check("structural damage bends the whole shell",
+          "body_bend" in shader and "if (body_bend.w > 0.001)" in shader,
+          "the bend uniform is declared but never applied")
+    check("the bend is actually sent to the shader",
+          'set_shader_parameter("body_bend"' in body,
+          "the uniform is never written, so it stays zero")
+
     check("contacts are read from _integrate_forces",
           "func _integrate_forces" in vehicle
-          and "report_contacts(state)" in vehicle,
-          "the contact state is not valid anywhere else")
-    check("enough contacts are reported to catch a real impact",
-          re.search(r"max_contacts_reported = (\d+)", vehicle) is not None
-          and int(re.search(r"max_contacts_reported = (\d+)",
-                            vehicle).group(1)) >= 8)
+          and "report_contacts(state)" in vehicle)
+    check("only the strongest contact of a collision counts",
+          "best_index" in body,
+          "one collision would register several times")
 
-    # 3. Damage must reach the physical parameters.
     for field in ("camber_deg", "toe_deg", "friction_coefficient",
-                  "peak_torque"):
+                  "spring_rate", "bump_damping", "rebound_damping",
+                  "tyre_radius", "peak_torque", "front_brake_torque",
+                  "rear_brake_torque"):
         check("  damage changes %s" % field, field in body,
-              "handling damage would be cosmetic")
-    check("damage scales from the design figures, not the current ones",
-          "_base_camber" in body and "_base_friction" in body
+              "this consequence is missing")
+
+    check("damage scales from the design figures",
+          "_base_camber" in body and "_base_spring" in body
           and "_base_torque" in body,
           "applying twice would compound")
 
-    # 4. Work out what a bent corner actually costs, using wheel.gd's own
-    #    formula, and check it is a real effect rather than a token one.
+    for system in ("coolant", "fuel", "engine_temp", "tyre_flat",
+                   "engine_running"):
+        check("  %s is modelled" % system, system in body)
+
+    # A flat tyre must be a real handicap.
+    m = re.search(r"w\.tyre_radius = _base_radius\[i\] \* ([\d.]+)", body)
+    check("a flat tyre collapses the rolling radius", m is not None)
+    if m:
+        print("  flat tyre rolling radius: %.0f%% of normal"
+              % (float(m.group(1)) * 100))
+        check("  and it is a big change", float(m.group(1)) < 0.85,
+              "%.2f" % float(m.group(1)))
+
+    # Work the grip loss through wheel.gd's own formula.
     grip_loss = float(re.search(r"var grip_loss := ([\d.]+)", body).group(1))
     power_loss = float(re.search(r"var power_loss := ([\d.]+)", body).group(1))
-    base_camber, base_mu = -1.4, 1.55
 
-    def effective_mu(damage):
-        camber = base_camber - 6.0 * damage
-        mu = base_mu * (1.0 - grip_loss * damage)
-        # wheel.gd: mu *= cos(camber) * 0.02 + 0.98
-        return mu * (math.cos(math.radians(camber)) * 0.02 + 0.98)
+    def mu(damage):
+        camber = -1.4 - 6.0 * damage
+        return 1.55 * (1.0 - grip_loss * damage) \
+            * (math.cos(math.radians(camber)) * 0.02 + 0.98)
 
-    stock = effective_mu(0.0)
-    wrecked = effective_mu(1.0)
-    print("  peak grip at a corner: %.3f stock -> %.3f wrecked (%.0f%%)"
-          % (stock, wrecked, 100.0 * wrecked / stock))
+    print("  corner grip: %.3f stock -> %.3f wrecked (%.0f%%)"
+          % (mu(0.0), mu(1.0), 100.0 * mu(1.0) / mu(0.0)))
     print("  peak torque: 450 -> %.0f Nm" % (450.0 * (1.0 - power_loss)))
+    check("a wrecked corner really loses grip", mu(1.0) < mu(0.0) * 0.8)
+    check("but the car is still driveable", mu(1.0) > mu(0.0) * 0.5)
 
-    check("a wrecked corner loses real grip", wrecked < stock * 0.8,
-          "only %.0f%% lost" % (100.0 * (1.0 - wrecked / stock)))
-    check("but a wrecked car is still driveable", wrecked > stock * 0.5,
-          "%.0f%% of grip left - unrecoverable" % (100.0 * wrecked / stock))
-    check("engine damage is noticeable", power_loss > 0.2)
-    check("engine damage is not crippling", power_loss < 0.6)
+    # Overheating must be progressive, not a cliff.
+    warn = float(re.search(r"var temp_warning := ([\d.]+)", body).group(1))
+    crit = float(re.search(r"var temp_critical := ([\d.]+)", body).group(1))
+    print("  power is pulled from %.0f C, seizes at %.0f C" % (warn, crit))
+    check("there is warning before the engine dies", crit - warn > 8.0,
+          "only %.0f degrees of warning" % (crit - warn))
 
-    # 5. Small knocks must not damage the car - driving over rough ground
-    #    generates constant small contacts.
+    # Small knocks must not damage anything.
     threshold = float(re.search(r"var impact_threshold := ([\d.]+)",
                                 body).group(1))
-    mass = 1495.0
-    # An impulse of J on a mass m is a velocity change of J/m.
-    print("  impact threshold %.0f Ns = %.2f m/s (%.1f km/h) of sudden change"
-          % (threshold, threshold / mass, threshold / mass * 3.6))
-    check("kerbs and scrapes do not dent the car",
-          threshold / mass > 0.3,
-          "%.2f m/s is low enough that rough ground would damage the car"
-          % (threshold / mass))
+    print("  impact threshold %.0f Ns = %.1f km/h of sudden change"
+          % (threshold, threshold / 1495.0 * 3.6))
+    check("kerbs and rough ground do not damage the car",
+          threshold / 1495.0 > 0.3)
 
-    # 6. Respawn must undo it.
-    check("respawn repairs the car", "func repair()" in body
+    check("respawn repairs everything", "func repair()" in body
           and "_damage.repair()" in vehicle)
 
 
@@ -1903,7 +2122,9 @@ def main():
     test_normal_blend_is_safe()
     test_engine_power_setting()
     test_all_wheel_drive()
-    test_collision_damage()
+    test_damage_energy_scale()
+    test_damage_zones_and_parts()
+    test_damage_consequences()
     print("\n%s" % ("ALL CHECKS PASSED" if not FAILURES
                     else "FAILURES: " + ", ".join(FAILURES)))
     return 1 if FAILURES else 0

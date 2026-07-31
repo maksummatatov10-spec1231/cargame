@@ -108,7 +108,9 @@ func _bind_widgets() -> void:
 	_damage_label.offset_left = 26.0
 	_damage_label.offset_top = 18.0
 	_damage_label.offset_right = 320.0
-	_damage_label.offset_bottom = 44.0
+	# Tall enough for the component list and the warnings underneath it.
+	_damage_label.offset_bottom = 240.0
+	_damage_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	_damage_label.visible = false
 
 	_fps = _need_label(self, "Fps", 18)
@@ -210,7 +212,25 @@ func _update_damage() -> void:
 		return
 	_damage_label.visible = true
 	var pct := roundi(damage.total_damage * 100.0)
-	_damage_label.text = "ПОВРЕЖДЕНИЯ  %d%%   (R — ремонт)" % pct
+	var parts := ""
+	for row in damage.worst_parts(3):
+		parts += "\n   %s %d%%" % [row["name"], roundi(float(row["amount"]) * 100.0)]
+
+	var warn := ""
+	if not damage.engine_running:
+		warn += "\n   ДВИГАТЕЛЬ ЗАГЛОХ: %s" % damage.engine_stop_reason
+	elif damage.engine_temp > damage.temp_warning:
+		warn += "\n   ПЕРЕГРЕВ %d°C" % roundi(damage.engine_temp)
+	if damage.coolant_fraction() < 0.85:
+		warn += "\n   антифриз %d%%" % roundi(damage.coolant_fraction() * 100.0)
+	if damage.fuel_fraction() < 0.98:
+		warn += "\n   топливо %d%%" % roundi(damage.fuel_fraction() * 100.0)
+	for i in damage.tyre_flat.size():
+		if damage.tyre_flat[i]:
+			warn += "\n   ПРОБИТО КОЛЕСО %d" % (i + 1)
+
+	_damage_label.text = "ПОВРЕЖДЕНИЯ  %d%%   (R — ремонт)%s%s" % [
+		pct, parts, warn]
 	if damage.total_damage > 0.6:
 		_damage_label.modulate = Color(1.0, 0.42, 0.36)
 	elif damage.total_damage > 0.25:
