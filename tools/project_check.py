@@ -656,6 +656,110 @@ def check_texture_imports():
           "roles_from_gltf" in tool and "normalTexture" in tool)
 
 
+def check_uids():
+    """Every .import UID must be one Godot can round-trip, and be unique.
+
+    This is the bug that produced 44 copies of each of these in the log:
+
+        core/io/resource_uid.cpp:132 - Condition "!unique_ids.has(p_id)" is
+        true. Returning: String()
+        Can't find file 'uid://chxql2rtxgf8b'.
+
+    resource_uid.cpp:38-41 defines the alphabet with an off-by-one the Godot
+    authors documented but cannot fix for compatibility:
+
+        static constexpr uint32_t char_count = ('z' - 'a');       // 25
+        static constexpr uint32_t base = char_count + ('9' - '0');  // 34
+
+    So the digits are 'a'..'y' plus '0'..'8' - 'z' and '9' are never emitted
+    by id_to_text() and are misread by text_to_id(). make_import_files.py used
+    to write uuid4().hex, which is hex, so 29 of 44 UIDs contained a '9'.
+    Those ids could not be re-encoded to the same string, the editor's lookup
+    missed, and every texture failed to resolve.
+
+    The check is a round trip through Godot's own two functions, transcribed
+    from the C++: text -> id -> text must give back the original.
+    """
+    print("\n== resource UIDs ==")
+
+    char_count, base = 25, 34
+
+    def text_to_id(text):
+        # resource_uid.cpp:66-83
+        value = 0
+        for ch in text:
+            value *= base
+            if "a" <= ch <= "z":
+                value += ord(ch) - ord("a")
+            elif ch.isdigit():
+                value += ord(ch) - ord("0") + char_count
+            else:
+                return None
+            value &= 0xFFFFFFFFFFFFFFFF
+        return value & 0x7FFFFFFFFFFFFFFF
+
+    def id_to_text(value):
+        # resource_uid.cpp:46-63
+        out = ""
+        while value:
+            c = value % base
+            out = (chr(ord("a") + c) if c < char_count
+                   else chr(ord("0") + (c - char_count))) + out
+            value //= base
+        return out
+
+    imports = []
+    for folder, _, names in os.walk(os.path.join(ROOT, "assets")):
+        for name in names:
+            if name.endswith(".import"):
+                imports.append(os.path.join(folder, name))
+    imports.sort()
+
+    seen = {}
+    broken = []
+    duplicates = []
+    for path in imports:
+        rel = os.path.relpath(path, ROOT)
+        m = re.search(r'uid="uid://([^"]+)"', open(path).read())
+        if not m:
+            broken.append("%s: no uid" % rel)
+            continue
+        text = m.group(1)
+        value = text_to_id(text)
+        if value is None or id_to_text(value) != text:
+            broken.append("%s: %s -> %s" % (rel, text, id_to_text(value or 0)))
+        if value in seen:
+            duplicates.append("%s and %s" % (rel, seen[value]))
+        seen[value] = rel
+
+    print("  %d .import files" % len(imports))
+    check("every UID survives text -> id -> text", not broken,
+          "%d broken, e.g. %s" % (len(broken), "; ".join(broken[:3])))
+    check("no UID contains 'z' or '9'",
+          not [t for t in seen.values() if False] and
+          all(("z" not in re.search(r'uid="uid://([^"]+)"',
+                                    open(os.path.join(ROOT, p)).read()).group(1)
+               and "9" not in re.search(r'uid="uid://([^"]+)"',
+                                        open(os.path.join(ROOT, p)).read()).group(1))
+              for p in seen.values()),
+          "those two characters are outside Godot's 34-symbol alphabet")
+    check("no two resources share a UID", not duplicates,
+          "; ".join(duplicates[:3]))
+
+    # Derived from the path, so re-running the generator is a no-op rather
+    # than a project-wide reimport.
+    # Look at the code, not the prose: the docstring explains the old uuid4
+    # mistake on purpose, and a plain substring search matched that comment
+    # and failed a correct file.
+    tool = open(os.path.join(ROOT, "tools", "make_import_files.py")).read()
+    code = "\n".join(l for l in tool.splitlines()
+                     if not l.lstrip().startswith("#"))
+    code = re.sub(r'"""[\s\S]*?"""', "", code)
+    check("UIDs are derived from the path, not random",
+          "uuid" not in code and "def uid_for" in code,
+          "random UIDs change on every run and force a full reimport")
+
+
 def check_lod_warning_is_not_ours():
     """The 'non-finite normal in LOD generation' notice is not an asset fault.
 
@@ -825,6 +929,7 @@ def main():
     check_fps_counter()
     check_frame_rate_control()
     check_texture_imports()
+    check_uids()
     check_lod_warning_is_not_ours()
     check_menus()
     check_camera_smoothing()

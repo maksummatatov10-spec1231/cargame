@@ -372,6 +372,24 @@ static func parts_hit(fraction: Vector3, severity: float) -> Dictionary:
 	return out
 
 
+## True when a part is one of the four road wheels.
+##
+## This is a named function rather than an inline `part in [...]` because of
+## a real parse error that reached the user:
+##
+##     Parse Error: Cannot infer the type of "is_wheel" variable because the
+##     value doesn't have a set type.
+##
+## `in` compiles to Variant::OP_IN, and gdscript_analyzer.cpp:2956 gives a
+## binary operation a VARIANT result type whenever either operand is a
+## Variant - which the loop variable of `for x in some_dictionary` always is.
+## `:=` then has nothing hard to infer from and the whole script fails to
+## compile. A typed `-> bool` function has a set type by construction.
+static func is_wheel(part: int) -> bool:
+	return part == Part.WHEEL_LF or part == Part.WHEEL_RF \
+		or part == Part.WHEEL_LR or part == Part.WHEEL_RR
+
+
 ## Energy of an impact in joules, from the impulse and the vehicle mass.
 ##
 ## An impulse J applied to mass m is a velocity change of J/m, and the energy

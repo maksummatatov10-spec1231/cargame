@@ -483,9 +483,13 @@ func _damage_zone(fraction: Vector3, severity: float) -> int:
 
 func _damage_parts(fraction: Vector3, severity: float) -> void:
 	var hits := DamageModel.parts_hit(fraction, severity)
-	for part in hits:
+	for key in hits:
+		# `key` comes out of a Dictionary, so its static type is Variant.
+		# Everything below works on this int copy instead - see the note on
+		# Variant inference at the top of DamageModel.
+		var part := int(key)
 		var before: float = part_damage[part]
-		var after := clampf(before + float(hits[part]), 0.0, 1.0)
+		var after := clampf(before + float(hits[key]), 0.0, 1.0)
 		part_damage[part] = after
 		if before < 0.65 and after >= 0.65:
 			part_broke.emit(String(DamageModel.PARTS[part]["name"]))
@@ -493,10 +497,7 @@ func _damage_parts(fraction: Vector3, severity: float) -> void:
 		var info: Dictionary = DamageModel.PARTS[part]
 		if info.has("corner") and after > 0.7:
 			var corner := int(info["corner"])
-			var is_wheel := part in [
-				DamageModel.Part.WHEEL_LF, DamageModel.Part.WHEEL_RF,
-				DamageModel.Part.WHEEL_LR, DamageModel.Part.WHEEL_RR]
-			if is_wheel and corner < tyre_flat.size():
+			if DamageModel.is_wheel(part) and corner < tyre_flat.size():
 				tyre_flat[corner] = true
 
 # --------------------------------------------------------------------------- #
